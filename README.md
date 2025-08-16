@@ -3,20 +3,12 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![GitHub stars](https://img.shields.io/github/stars/BioInfo/nova-brief.svg?style=social&label=Star)](https://github.com/BioInfo/nova-brief)
-[![GitHub forks](https://img.shields.io/github/forks/BioInfo/nova-brief.svg?style=social&label=Fork)](https://github.com/BioInfo/nova-brief/fork)
-[![GitHub issues](https://img.shields.io/github/issues/BioInfo/nova-brief.svg)](https://github.com/BioInfo/nova-brief/issues)
 [![GitHub last commit](https://img.shields.io/github/last-commit/BioInfo/nova-brief.svg)](https://github.com/BioInfo/nova-brief/commits/main)
 [![Contributions welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg?style=flat)](https://github.com/BioInfo/nova-brief/issues)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
 > **⚡ Fast, reliable deep-research agent powered by Cerebras GPT-OSS-120B**  
 > Plans → Searches → Reads → Verifies → Writes analyst-grade cited briefs
-
-<div align="center">
-
-![Nova Brief Demo](https://via.placeholder.com/800x400/1a1a1a/ffffff?text=🚀+Demo+Coming+Soon)
-
-</div>
 
 ---
 
@@ -164,13 +156,12 @@ We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.
 <div align="center">
 
 [![GitHub followers](https://img.shields.io/github/followers/BioInfo?style=social)](https://github.com/BioInfo)
-[![Twitter Follow](https://img.shields.io/twitter/follow/novabrief?style=social)](https://twitter.com/novabrief)
+[![Twitter Follow](https://img.shields.io/twitter/follow/bioinfo?style=social)](https://twitter.com/bioinfo)
 
 **Join the conversation!** 💬
 
 [🐛 Issues](https://github.com/BioInfo/nova-brief/issues) • 
 [💡 Discussions](https://github.com/BioInfo/nova-brief/discussions) • 
-[📧 Contact](mailto:hello@novabrief.ai)
 
 </div>
 
