@@ -1,0 +1,51 @@
+{
+  "description": "Evaluation topics for Nova Brief research agent",
+  "version": "1.0",
+  "topics": [
+    {
+      "topic": "Impact of artificial intelligence on healthcare in 2024",
+      "expected_elements": [
+        "AI applications in healthcare",
+        "Current implementations",
+        "Benefits and challenges",
+        "Future prospects"
+      ]
+    },
+    {
+      "topic": "Climate change mitigation strategies and their effectiveness",
+      "expected_elements": [
+        "Renewable energy adoption",
+        "Carbon capture technologies",
+        "Policy measures",
+        "International cooperation"
+      ]
+    },
+    {
+      "topic": "Remote work trends and productivity impacts post-2020",
+      "expected_elements": [
+        "Adoption rates",
+        "Productivity studies",
+        "Employee satisfaction",
+        "Company policies"
+      ]
+    },
+    {
+      "topic": "Cryptocurrency regulation developments in major economies",
+      "expected_elements": [
+        "Regulatory frameworks",
+        "Government positions",
+        "Market impacts",
+        "Compliance requirements"
+      ]
+    },
+    {
+      "topic": "Electric vehicle market growth and infrastructure challenges",
+      "expected_elements": [
+        "Market statistics",
+        "Charging infrastructure",
+        "Government incentives",
+        "Consumer adoption"
+      ]
+    }
+  ]
+}
