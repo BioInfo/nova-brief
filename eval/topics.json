@@ -1,0 +1,72 @@
+[
+  {
+    "id": "ai_healthcare",
+    "topic": "Impact of artificial intelligence on healthcare diagnostics",
+    "description": "Research the current and potential future applications of AI in medical diagnosis, including benefits, challenges, and ethical considerations.",
+    "expected_sources": ["medical journals", "technology reports", "healthcare studies"],
+    "complexity": "medium"
+  },
+  {
+    "id": "climate_food_security",
+    "topic": "Climate change impact on global food security",
+    "description": "Analyze how climate change affects food production, distribution, and access worldwide, including adaptation strategies.",
+    "expected_sources": ["climate reports", "agricultural studies", "UN reports"],
+    "complexity": "high"
+  },
+  {
+    "id": "quantum_cryptography",
+    "topic": "Quantum computing applications in cryptography",
+    "description": "Examine the potential of quantum computing to break current encryption methods and develop quantum-resistant cryptography.",
+    "expected_sources": ["academic papers", "technology reports", "security analyses"],
+    "complexity": "high"
+  },
+  {
+    "id": "remote_work_productivity",
+    "topic": "Remote work effects on employee productivity and well-being",
+    "description": "Study the impact of remote work arrangements on worker productivity, job satisfaction, and mental health.",
+    "expected_sources": ["workplace studies", "productivity reports", "psychological research"],
+    "complexity": "medium"
+  },
+  {
+    "id": "crispr_ethics",
+    "topic": "CRISPR gene editing ethical considerations and regulations",
+    "description": "Research the ethical implications of CRISPR technology, current regulatory frameworks, and future governance needs.",
+    "expected_sources": ["bioethics papers", "regulatory documents", "scientific journals"],
+    "complexity": "high"
+  },
+  {
+    "id": "renewable_energy_transition",
+    "topic": "Global transition to renewable energy sources",
+    "description": "Analyze the progress, challenges, and economic implications of transitioning from fossil fuels to renewable energy.",
+    "expected_sources": ["energy reports", "economic analyses", "policy documents"],
+    "complexity": "medium"
+  },
+  {
+    "id": "social_media_mental_health",
+    "topic": "Social media impact on adolescent mental health",
+    "description": "Examine the relationship between social media usage and mental health outcomes in teenagers.",
+    "expected_sources": ["psychological studies", "health reports", "social research"],
+    "complexity": "medium"
+  },
+  {
+    "id": "blockchain_finance",
+    "topic": "Blockchain technology in financial services",
+    "description": "Research current and potential applications of blockchain in banking, payments, and financial services.",
+    "expected_sources": ["fintech reports", "banking studies", "technology analyses"],
+    "complexity": "medium"
+  },
+  {
+    "id": "space_economy",
+    "topic": "Commercial space industry economic impact",
+    "description": "Analyze the growth of the commercial space sector and its economic implications for various industries.",
+    "expected_sources": ["space industry reports", "economic analyses", "market research"],
+    "complexity": "medium"
+  },
+  {
+    "id": "autonomous_vehicles",
+    "topic": "Autonomous vehicles safety and regulatory challenges",
+    "description": "Study the safety considerations and regulatory hurdles facing the deployment of self-driving vehicles.",
+    "expected_sources": ["automotive studies", "safety reports", "regulatory documents"],
+    "complexity": "high"
+  }
+]

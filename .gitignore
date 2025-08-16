@@ -103,6 +103,7 @@ celerybeat.pid
 
 # Environments
 .env
+.env.local
 .venv
 env/
 venv/
@@ -169,3 +170,6 @@ secrets/
 *.key
 *.pem
 config.json
+
+# Roo development rules (project-specific)
+.roo/
