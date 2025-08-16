@@ -25,31 +25,33 @@ For each significant claim or fact you identify:
 3. Note the strength of evidence (strong, moderate, weak)
 4. Identify any contradictions or gaps
 
-Format your response as JSON:
-{
-  "analysis": {
-    "main_findings": ["finding 1", "finding 2", ...],
+IMPORTANT: You must respond with ONLY valid JSON, no markdown, no explanations, no backticks. Start your response with {{ and end with }}.
+
+Use this exact structure:
+{{
+  "analysis": {{
+    "main_findings": ["finding 1", "finding 2"],
     "claims": [
-      {
+      {{
         "claim": "specific claim or fact",
         "supporting_sources": ["chunk_id_1", "chunk_id_2"],
         "evidence_strength": "strong|moderate|weak",
         "claim_type": "factual|opinion|statistical|definition",
         "confidence": 0.9
-      }
+      }}
     ],
     "contradictions": [
-      {
+      {{
         "claim_1": "first conflicting claim",
         "claim_2": "second conflicting claim",
         "sources_1": ["chunk_id"],
         "sources_2": ["chunk_id"]
-      }
+      }}
     ],
     "knowledge_gaps": ["gap 1", "gap 2"],
     "summary": "brief summary of key insights"
-  }
-}
+  }}
+}}
 
 Content chunks to analyze:
 {chunks_text}"""

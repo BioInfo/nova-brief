@@ -26,19 +26,21 @@ Each sub-question should:
 
 For each sub-question, suggest 1-2 search queries that would find relevant information.
 
-Format your response as a JSON object with this structure:
-{
-  "research_plan": {
+IMPORTANT: You must respond with ONLY valid JSON, no markdown, no explanations, no backticks. Start your response with {{ and end with }}.
+
+Use this exact structure:
+{{
+  "research_plan": {{
     "main_topic": "the original research topic",
     "sub_questions": [
-      {
+      {{
         "question": "specific sub-question",
         "rationale": "why this question is important",
         "search_queries": ["query 1", "query 2"]
-      }
+      }}
     ]
-  }
-}
+  }}
+}}
 
 Research Topic: {topic}"""
     
@@ -74,18 +76,24 @@ Research Topic: {topic}"""
                 {"role": "user", "content": prompt}
             ]
             
-            response = chat(messages, temperature=0.3, max_tokens=1500)
-            plan_text = response["content"]
-            
-            # Parse the JSON response
-            import json
             try:
-                plan_data = json.loads(plan_text)
-                research_plan = plan_data.get("research_plan", {})
-            except json.JSONDecodeError:
-                # Fallback to simple parsing if JSON fails
-                logger.warning("Failed to parse JSON plan, using fallback")
-                research_plan = self._fallback_parse_plan(topic, plan_text)
+                # Call LLM without unsupported response_format
+                response = chat(messages, temperature=0.1, max_tokens=1500)
+                plan_text = response["content"]
+                logger.info(f"LLM response received: {repr(plan_text[:100])}")
+                
+                # Check if response is complete
+                if not plan_text or len(plan_text.strip()) < 10:
+                    raise ValueError(f"Incomplete LLM response: {repr(plan_text)}")
+                
+                # Try to parse JSON from the response
+                research_plan = self._parse_json_response(plan_text, topic)
+                logger.info("Successfully parsed LLM response")
+                
+            except Exception as chat_error:
+                logger.error(f"LLM chat failed: {chat_error}")
+                # Use fallback with no LLM response
+                research_plan = self._fallback_parse_plan(topic, "")
             
             # Extract all queries for easy access
             all_queries = []
@@ -103,7 +111,7 @@ Research Topic: {topic}"""
                 "research_plan": research_plan,
                 "all_queries": all_queries,
                 "query_count": len(all_queries),
-                "tokens_used": response["usage"]["total_tokens"],
+                "tokens_used": response.get("usage", {}).get("total_tokens", 0) if 'response' in locals() else 0,
                 "success": True
             }
             
@@ -130,53 +138,95 @@ Research Topic: {topic}"""
                 "error": str(e)
             }
     
+    def _parse_json_response(self, response_text: str, topic: str) -> Dict[str, Any]:
+        """
+        Parse JSON response from LLM, with robust error handling.
+        
+        Args:
+            response_text: Raw response from LLM
+            topic: Original research topic for fallback
+        
+        Returns:
+            Parsed research plan structure
+        """
+        import json
+        
+        # Clean up the response
+        clean_text = response_text.strip()
+        
+        # Try to find JSON in the response
+        try:
+            # Look for JSON structure
+            if '{' in clean_text and '}' in clean_text:
+                # Extract JSON from response
+                start_idx = clean_text.find('{')
+                end_idx = clean_text.rfind('}') + 1
+                json_text = clean_text[start_idx:end_idx]
+                
+                # Parse the JSON
+                plan_data = json.loads(json_text)
+                
+                # Validate structure
+                if "research_plan" in plan_data:
+                    research_plan = plan_data["research_plan"]
+                    
+                    # Ensure required fields exist
+                    if ("main_topic" in research_plan and
+                        "sub_questions" in research_plan and
+                        isinstance(research_plan["sub_questions"], list)):
+                        logger.info(f"Successfully parsed JSON with {len(research_plan['sub_questions'])} sub-questions")
+                        return research_plan
+                
+                raise ValueError("JSON structure doesn't match expected format")
+            else:
+                raise ValueError("No JSON structure found in response")
+                
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning(f"JSON parsing failed: {e}. Raw response: {repr(response_text[:200])}")
+            # Fall back to simple parsing
+            return self._fallback_parse_plan(topic, response_text)
+
     def _fallback_parse_plan(self, topic: str, plan_text: str) -> Dict[str, Any]:
         """
         Fallback parser for when JSON parsing fails.
+        Creates a basic research plan to ensure the pipeline can continue.
         
         Args:
             topic: Original research topic
             plan_text: Raw plan text from LLM
         
         Returns:
-            Simplified research plan structure
+            Basic research plan structure
         """
-        # Simple fallback - extract questions and create basic queries
-        lines = plan_text.split('\n')
-        questions = []
+        logger.info("Using fallback planning due to JSON parsing failure")
         
-        for line in lines:
-            line = line.strip()
-            if line and ('?' in line or 'question' in line.lower()):
-                # Clean up the line to extract question
-                question = line.replace('-', '').replace('*', '').strip()
-                if question:
-                    # Generate simple search queries based on question
-                    search_queries = [question, f"{topic} {question}"]
-                    questions.append({
-                        "question": question,
-                        "rationale": "Generated from fallback parsing",
-                        "search_queries": search_queries[:2]
-                    })
-        
-        # If no questions found, create basic ones
-        if not questions:
-            questions = [
-                {
-                    "question": f"What is {topic}?",
-                    "rationale": "Basic definition and overview",
-                    "search_queries": [topic, f"{topic} definition overview"]
-                },
-                {
-                    "question": f"Recent developments in {topic}",
-                    "rationale": "Current state and recent changes",
-                    "search_queries": [f"{topic} recent developments", f"{topic} 2024 news"]
-                }
-            ]
+        # Create a comprehensive but simple research plan
+        questions = [
+            {
+                "question": f"What is {topic} and why is it important?",
+                "rationale": "Understanding the basic concept and significance",
+                "search_queries": [f"{topic} definition importance", f"what is {topic}"]
+            },
+            {
+                "question": f"What are the current developments in {topic}?",
+                "rationale": "Recent progress and current state",
+                "search_queries": [f"{topic} recent developments 2024", f"{topic} current trends"]
+            },
+            {
+                "question": f"What are the key challenges or considerations regarding {topic}?",
+                "rationale": "Understanding limitations, challenges, or important factors",
+                "search_queries": [f"{topic} challenges problems", f"{topic} considerations issues"]
+            },
+            {
+                "question": f"What are the potential impacts or applications of {topic}?",
+                "rationale": "Understanding real-world effects and uses",
+                "search_queries": [f"{topic} impact applications", f"{topic} real world uses"]
+            }
+        ]
         
         return {
             "main_topic": topic,
-            "sub_questions": questions[:6]  # Limit to 6 questions
+            "sub_questions": questions
         }
 
 

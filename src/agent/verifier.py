@@ -29,28 +29,30 @@ Identify claims that need additional verification:
 - Claims that contradict other information
 - Claims that seem speculative or unsubstantiated
 
-Format your response as JSON:
-{
-  "verification": {
+IMPORTANT: You must respond with ONLY valid JSON, no markdown, no explanations, no backticks. Start your response with {{ and end with }}.
+
+Use this exact structure:
+{{
+  "verification": {{
     "verified_claims": [
-      {
+      {{
         "claim": "claim text",
         "verification_status": "verified|partial|unverified",
         "source_quality": "high|medium|low",
         "notes": "verification notes"
-      }
+      }}
     ],
     "unsupported_claims": ["claim 1", "claim 2"],
     "follow_up_queries": ["query 1", "query 2"],
-    "coverage_assessment": {
+    "coverage_assessment": {{
       "total_claims": 10,
       "verified_claims": 8,
       "partially_verified": 1,
       "unverified_claims": 1,
       "coverage_score": 0.85
-    }
-  }
-}
+    }}
+  }}
+}}
 
 Claims to verify:
 {claims_data}"""

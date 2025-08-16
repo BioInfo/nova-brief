@@ -9,7 +9,9 @@ from openai import OpenAI
 from dotenv import load_dotenv
 import logging
 
-load_dotenv()
+# Load environment variables from both .env and .env.local
+load_dotenv()  # Load .env
+load_dotenv('.env.local')  # Load .env.local (overrides .env if present)
 
 logger = logging.getLogger(__name__)
 
@@ -22,13 +24,13 @@ class CerebrasClient:
         self.base_url = os.getenv("CEREBRAS_BASE_URL", "https://api.cerebras.ai/v1")
         self.model = os.getenv("MODEL", "gpt-oss-120b")
         
-        if not self.api_key:
-            raise ValueError("CEREBRAS_API_KEY environment variable is required")
-        
-        self.client = OpenAI(
-            api_key=self.api_key,
-            base_url=self.base_url
-        )
+        # Initialize client only if API key is available
+        self.client = None
+        if self.api_key:
+            self.client = OpenAI(
+                api_key=self.api_key,
+                base_url=self.base_url
+            )
     
     def chat(self, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
         """
@@ -41,6 +43,9 @@ class CerebrasClient:
         Returns:
             Dict containing response content and metadata
         """
+        if not self.client:
+            raise ValueError("CEREBRAS_API_KEY environment variable is required")
+            
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -63,7 +68,7 @@ class CerebrasClient:
             raise
 
 
-# Global instance
+# Global instance - will be created without failing even if no API key
 cerebras_client = CerebrasClient()
 
 

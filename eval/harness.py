@@ -15,9 +15,9 @@ from datetime import datetime
 import sys
 sys.path.append(str(Path(__file__).parent.parent / "src"))
 
-from agent import planner, searcher, reader, analyst, verifier, writer
-from observability.logging import get_logger, configure_logging
-from observability.tracing import get_trace_events, clear_trace_events
+from src.agent import planner, searcher, reader, analyst, verifier, writer
+from src.observability.logging import get_logger, configure_logging
+from src.observability.tracing import get_trace_events, clear_trace_events
 
 # Configure logging
 configure_logging()
