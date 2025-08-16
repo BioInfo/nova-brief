@@ -1,390 +1,486 @@
-"""
-Verifier agent module for validating claims and identifying unsupported statements.
-Ensures citation coverage and triggers follow-up research for gaps.
-"""
+"""Verifier component for citation validation and coverage enforcement."""
 
-from typing import List, Dict, Any, Optional, Set, Tuple
-from ..providers.cerebras_client import chat
+import asyncio
+from typing import Dict, List, Any, Set, Optional
+from urllib.parse import urlparse
+import httpx
+from ..storage.models import Claim, Citation, Document, Constraints
 from ..observability.logging import get_logger
-from ..observability.tracing import start_span, end_span
+from ..observability.tracing import TimedOperation, emit_event
 
 logger = get_logger(__name__)
 
 
-class Verifier:
-    """Verification agent that checks claim coverage and citation quality."""
+async def verify(
+    claims: List[Claim],
+    citations: List[Citation],
+    documents: List[Document],
+    constraints: Constraints,
+    target_sources_per_claim: int = 1
+) -> Dict[str, Any]:
+    """
+    Verify claim coverage and citation quality.
     
-    def __init__(self):
-        self.min_sources_per_claim = 1
-        self.verification_prompt = """You are a fact-checking assistant. Review the provided claims and their sources to identify issues.
-
-For each claim, check:
-1. Is the claim supported by the provided sources?
-2. Is the evidence sufficient and credible?
-3. Are there any obvious gaps or contradictions?
-
-Identify claims that need additional verification:
-- Claims with no supporting sources
-- Claims with weak or insufficient evidence
-- Claims that contradict other information
-- Claims that seem speculative or unsubstantiated
-
-IMPORTANT: You must respond with ONLY valid JSON, no markdown, no explanations, no backticks. Start your response with {{ and end with }}.
-
-Use this exact structure:
-{{
-  "verification": {{
-    "verified_claims": [
-      {{
-        "claim": "claim text",
-        "verification_status": "verified|partial|unverified",
-        "source_quality": "high|medium|low",
-        "notes": "verification notes"
-      }}
-    ],
-    "unsupported_claims": ["claim 1", "claim 2"],
-    "follow_up_queries": ["query 1", "query 2"],
-    "coverage_assessment": {{
-      "total_claims": 10,
-      "verified_claims": 8,
-      "partially_verified": 1,
-      "unverified_claims": 1,
-      "coverage_score": 0.85
-    }}
-  }}
-}}
-
-Claims to verify:
-{claims_data}"""
+    Args:
+        claims: List of claims to verify
+        citations: List of citations linking claims to sources
+        documents: List of available documents
+        constraints: Research constraints
+        target_sources_per_claim: Minimum sources required per claim
     
-    async def verify(self, analysis_result: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Verify claims coverage and identify gaps requiring follow-up.
-        
-        Args:
-            analysis_result: Output from analyst module
-        
-        Returns:
-            Dict containing verification results and follow-up recommendations
-        """
-        span_id = start_span("verify", "agent", {
-            "claim_count": len(analysis_result.get("claims", []))
-        })
-        
+    Returns:
+        Dictionary with verification results and follow-up recommendations
+    """
+    with TimedOperation("agent_verifier") as timer:
         try:
-            claims = analysis_result.get("claims", [])
-            topic = analysis_result.get("research_topic", "")
-            
-            logger.info(f"Verifying {len(claims)} claims for topic: {topic}")
-            
             if not claims:
-                return self._empty_verification_result(topic)
+                return {
+                    "success": True,
+                    "unsupported_claims": [],
+                    "follow_up_queries": [],
+                    "updated_citations": citations,
+                    "coverage_report": {
+                        "total_claims": 0,
+                        "supported_claims": 0,
+                        "coverage_percentage": 100.0
+                    }
+                }
             
-            # Basic coverage check
-            coverage_issues = self._check_basic_coverage(claims)
+            logger.info(f"Verifying {len(claims)} claims with {len(citations)} citations")
             
-            # LLM-based verification for content quality
-            llm_verification = await self._llm_verify_claims(claims, topic)
+            # Create mappings for efficient lookup
+            citation_map = {cit["claim_id"]: cit for cit in citations}
+            available_urls = {doc["url"] for doc in documents}
             
-            # Combine results
-            verified_claims = llm_verification.get("verified_claims", [])
-            unsupported_claims = coverage_issues["unsupported_claims"] + llm_verification.get("unsupported_claims", [])
+            # Verify each claim
+            verification_results = []
             
-            # Remove duplicates
-            unsupported_claims = list(dict.fromkeys(unsupported_claims))
+            for claim in claims:
+                result = await _verify_single_claim(
+                    claim, 
+                    citation_map.get(claim["id"]), 
+                    available_urls,
+                    target_sources_per_claim
+                )
+                verification_results.append(result)
             
-            # Generate follow-up queries
-            follow_up_queries = self._generate_follow_up_queries(
-                unsupported_claims, 
-                llm_verification.get("follow_up_queries", []),
-                topic
+            # Identify unsupported claims
+            unsupported_claims = [
+                result["claim"] for result in verification_results 
+                if not result["is_supported"]
+            ]
+            
+            # Check URL accessibility for citations
+            url_check_results = await _check_citation_urls(citations, documents)
+            
+            # Update citations based on URL checks
+            updated_citations = _update_citations_with_url_checks(
+                citations, 
+                url_check_results
             )
             
-            # Calculate final coverage metrics
-            total_claims = len(claims)
-            verified_count = len([c for c in verified_claims if c.get("verification_status") == "verified"])
-            partial_count = len([c for c in verified_claims if c.get("verification_status") == "partial"])
-            unverified_count = len(unsupported_claims)
+            # Generate follow-up queries for unsupported claims
+            follow_up_queries = _generate_follow_up_queries(
+                unsupported_claims, 
+                verification_results
+            )
             
-            coverage_score = (verified_count + 0.5 * partial_count) / max(total_claims, 1)
+            # Calculate coverage metrics
+            supported_count = len([r for r in verification_results if r["is_supported"]])
+            coverage_percentage = (supported_count / len(claims)) * 100 if claims else 100.0
             
-            result = {
-                "research_topic": topic,
-                "total_claims": total_claims,
-                "verified_claims": verified_claims,
+            # Analyze domain diversity
+            domain_diversity = _analyze_domain_diversity(updated_citations, documents)
+            
+            coverage_report = {
+                "total_claims": len(claims),
+                "supported_claims": supported_count,
+                "unsupported_claims": len(unsupported_claims),
+                "coverage_percentage": round(coverage_percentage, 1),
+                "target_sources_per_claim": target_sources_per_claim,
+                "domain_diversity": domain_diversity,
+                "accessible_citations": sum(1 for r in url_check_results.values() if r["accessible"]),
+                "total_citation_urls": len(url_check_results)
+            }
+            
+            # Determine if additional research is needed
+            needs_follow_up = (
+                coverage_percentage < 80.0 or 
+                len(unsupported_claims) > len(claims) * 0.3 or
+                domain_diversity["unique_domains"] < 3
+            )
+            
+            logger.info(
+                f"Verification completed: {coverage_percentage:.1f}% coverage, "
+                f"{len(unsupported_claims)} unsupported claims",
+                extra=coverage_report
+            )
+            
+            emit_event(
+                "verification_completed",
+                metadata={
+                    **coverage_report,
+                    "needs_follow_up": needs_follow_up,
+                    "follow_up_queries_count": len(follow_up_queries)
+                }
+            )
+            
+            return {
+                "success": True,
                 "unsupported_claims": unsupported_claims,
                 "follow_up_queries": follow_up_queries,
-                "coverage_issues": coverage_issues,
-                "verification_metrics": {
-                    "verified_claims": verified_count,
-                    "partially_verified": partial_count,
-                    "unverified_claims": unverified_count,
-                    "coverage_score": coverage_score,
-                    "needs_follow_up": len(follow_up_queries) > 0
-                },
-                "success": True
+                "updated_citations": updated_citations,
+                "coverage_report": coverage_report,
+                "verification_details": verification_results,
+                "url_check_results": url_check_results,
+                "needs_follow_up": needs_follow_up
             }
             
-            logger.info(f"Verification completed: {verified_count}/{total_claims} verified, coverage score: {coverage_score:.2f}")
-            end_span(span_id, success=True, additional_data={
-                "coverage_score": coverage_score,
-                "follow_up_needed": len(follow_up_queries)
-            })
-            
-            return result
-            
         except Exception as e:
-            error_msg = f"Verification failed for topic '{topic}': {e}"
-            logger.error(error_msg)
-            end_span(span_id, success=False, error=error_msg)
+            logger.error(f"Verification failed: {e}")
+            emit_event(
+                "verification_error",
+                metadata={
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                    "claims_count": len(claims) if claims else 0
+                }
+            )
+            
             return {
-                "research_topic": analysis_result.get("research_topic", ""),
-                "total_claims": len(analysis_result.get("claims", [])),
-                "verified_claims": [],
+                "success": False,
+                "error": str(e),
+                "error_type": type(e).__name__,
                 "unsupported_claims": [],
                 "follow_up_queries": [],
-                "coverage_issues": {},
-                "verification_metrics": {
-                    "verified_claims": 0,
-                    "partially_verified": 0,
-                    "unverified_claims": 0,
-                    "coverage_score": 0,
-                    "needs_follow_up": False
-                },
-                "success": False,
-                "error": str(e)
+                "updated_citations": citations,
+                "coverage_report": {
+                    "total_claims": len(claims) if claims else 0,
+                    "supported_claims": 0,
+                    "coverage_percentage": 0.0
+                }
             }
+
+
+async def _verify_single_claim(
+    claim: Claim,
+    citation: Citation,
+    available_urls: Set[str],
+    target_sources: int
+) -> Dict[str, Any]:
+    """Verify a single claim's citation support."""
     
-    def _check_basic_coverage(self, claims: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Perform basic coverage checks on claims.
-        
-        Args:
-            claims: List of claims to check
-        
-        Returns:
-            Dict with coverage issues
-        """
-        unsupported_claims = []
-        weak_evidence_claims = []
-        orphaned_claims = []
-        
-        for claim in claims:
-            claim_text = claim.get("claim", "")
-            sources = claim.get("supporting_sources", [])
-            evidence_strength = claim.get("evidence_strength", "weak")
-            
-            # Check for unsupported claims
-            if not sources or len(sources) < self.min_sources_per_claim:
-                unsupported_claims.append(claim_text)
-                orphaned_claims.append(claim_text)
-            
-            # Check for weak evidence
-            elif evidence_strength == "weak":
-                weak_evidence_claims.append(claim_text)
-        
+    # Check if claim needs citation (non-obvious claims)
+    needs_citation = _claim_needs_citation(claim)
+    
+    if not needs_citation:
         return {
-            "unsupported_claims": unsupported_claims,
-            "weak_evidence_claims": weak_evidence_claims,
-            "orphaned_claims": orphaned_claims,
-            "total_issues": len(unsupported_claims) + len(weak_evidence_claims)
+            "claim": claim,
+            "is_supported": True,
+            "support_level": "obvious",
+            "available_sources": 0,
+            "issues": []
         }
     
-    async def _llm_verify_claims(self, claims: List[Dict[str, Any]], topic: str) -> Dict[str, Any]:
-        """
-        Use LLM to verify claim quality and evidence.
-        
-        Args:
-            claims: List of claims to verify
-            topic: Research topic for context
-        
-        Returns:
-            LLM verification results
-        """
-        try:
-            # Prepare claims data for verification
-            claims_data = ""
-            for i, claim in enumerate(claims):
-                claims_data += f"\n--- CLAIM {i+1} ---\n"
-                claims_data += f"Claim: {claim.get('claim', '')}\n"
-                claims_data += f"Sources: {claim.get('supporting_sources', [])}\n"
-                claims_data += f"Evidence Strength: {claim.get('evidence_strength', 'unknown')}\n"
-                claims_data += f"Confidence: {claim.get('confidence', 'unknown')}\n"
-            
-            # Create verification prompt
-            prompt = self.verification_prompt.format(claims_data=claims_data)
-            
-            # Get verification from LLM
-            messages = [
-                {"role": "system", "content": f"You are verifying research claims about: {topic}"},
-                {"role": "user", "content": prompt}
-            ]
-            
-            response = chat(messages, temperature=0.1, max_tokens=1500)
-            verification_text = response["content"]
-            
-            # Parse JSON response
-            import json
+    # Check citation exists
+    if not citation:
+        return {
+            "claim": claim,
+            "is_supported": False,
+            "support_level": "none",
+            "available_sources": 0,
+            "issues": ["No citation provided"]
+        }
+    
+    # Check citation URLs are available
+    citation_urls = citation["urls"]
+    available_citation_urls = [url for url in citation_urls if url in available_urls]
+    
+    issues = []
+    
+    if not available_citation_urls:
+        issues.append("No cited sources available in document set")
+    elif len(available_citation_urls) < target_sources:
+        issues.append(f"Only {len(available_citation_urls)} source(s), target is {target_sources}")
+    
+    # Check for domain diversity
+    if len(available_citation_urls) > 1:
+        domains = set()
+        for url in available_citation_urls:
             try:
-                verification_data = json.loads(verification_text)
-                return verification_data.get("verification", {})
-            except json.JSONDecodeError:
-                # Fallback parsing if JSON fails
-                logger.warning("Failed to parse JSON verification, using fallback")
-                return self._fallback_parse_verification(verification_text, claims)
+                domain = urlparse(url).netloc
+                domains.add(domain)
+            except Exception:
+                continue
         
-        except Exception as e:
-            logger.error(f"LLM verification failed: {e}")
-            return {
-                "verified_claims": [],
-                "unsupported_claims": [],
-                "follow_up_queries": []
+        if len(domains) < len(available_citation_urls):
+            issues.append("Multiple sources from same domain - limited diversity")
+    
+    # Determine support level
+    source_count = len(available_citation_urls)
+    if source_count >= target_sources:
+        support_level = "strong" if source_count >= 2 else "adequate"
+        is_supported = True
+    else:
+        support_level = "weak"
+        is_supported = source_count > 0
+    
+    return {
+        "claim": claim,
+        "is_supported": is_supported,
+        "support_level": support_level,
+        "available_sources": source_count,
+        "cited_urls": available_citation_urls,
+        "issues": issues
+    }
+
+
+def _claim_needs_citation(claim: Claim) -> bool:
+    """Determine if a claim needs citation support."""
+    claim_text = claim["text"].lower()
+    
+    # Obvious/common knowledge patterns that don't need citation
+    obvious_patterns = [
+        "is a", "are known as", "commonly", "generally", 
+        "typically", "usually", "widely", "broadly"
+    ]
+    
+    # Claims that definitely need citation
+    needs_citation_patterns = [
+        "research shows", "study found", "according to", "data indicates",
+        "statistics show", "report states", "analysis reveals", "survey",
+        "%", "percent", "million", "billion", "increase", "decrease",
+        "compared to", "versus", "growth", "decline"
+    ]
+    
+    # Check if claim has specific numbers or research references
+    has_specifics = any(pattern in claim_text for pattern in needs_citation_patterns)
+    
+    # Check if claim appears to be obvious
+    appears_obvious = any(pattern in claim_text for pattern in obvious_patterns)
+    
+    # Opinion claims with high confidence need support
+    if claim["type"] == "opinion" and claim["confidence"] > 0.7:
+        return True
+    
+    # Fact and estimate claims generally need citation
+    if claim["type"] in ["fact", "estimate"]:
+        return not appears_obvious or has_specifics
+    
+    # Default: if it has specific data, it needs citation
+    return has_specifics
+
+
+async def _check_citation_urls(
+    citations: List[Citation], 
+    documents: List[Document],
+    timeout: float = 5.0
+) -> Dict[str, Dict[str, Any]]:
+    """Check URL accessibility for citation validation."""
+    
+    # Collect all unique URLs from citations
+    all_urls = set()
+    for citation in citations:
+        all_urls.update(citation["urls"])
+    
+    # Quick check: if URL is in our documents, consider it accessible
+    document_urls = {doc["url"] for doc in documents}
+    
+    url_results = {}
+    
+    # Check each URL
+    for url in all_urls:
+        if url in document_urls:
+            # We already have this document, so it's accessible
+            url_results[url] = {
+                "accessible": True,
+                "status_code": 200,
+                "method": "document_cache",
+                "error": None
             }
+        else:
+            # Check URL accessibility with a quick HEAD request
+            result = await _check_single_url(url, timeout)
+            url_results[url] = result
     
-    def _fallback_parse_verification(self, verification_text: str, claims: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Fallback parser for verification when JSON parsing fails.
-        
-        Args:
-            verification_text: Raw verification text
-            claims: Original claims
-        
-        Returns:
-            Basic verification structure
-        """
-        # Simple fallback - mark claims with sources as verified
-        verified_claims = []
-        unsupported_claims = []
-        
-        for claim in claims:
-            claim_text = claim.get("claim", "")
-            sources = claim.get("supporting_sources", [])
-            
-            if sources:
-                verified_claims.append({
-                    "claim": claim_text,
-                    "verification_status": "verified",
-                    "source_quality": "medium",
-                    "notes": "Fallback verification - has sources"
-                })
-            else:
-                unsupported_claims.append(claim_text)
-        
+    return url_results
+
+
+async def _check_single_url(url: str, timeout: float) -> Dict[str, Any]:
+    """Check if a single URL is accessible."""
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.head(url, follow_redirects=True)
+            return {
+                "accessible": response.status_code < 400,
+                "status_code": response.status_code,
+                "method": "http_head",
+                "error": None
+            }
+    except httpx.TimeoutException:
         return {
-            "verified_claims": verified_claims,
-            "unsupported_claims": unsupported_claims,
-            "follow_up_queries": []
+            "accessible": False,
+            "status_code": None,
+            "method": "http_head",
+            "error": "timeout"
         }
+    except Exception as e:
+        return {
+            "accessible": False,
+            "status_code": None,
+            "method": "http_head",
+            "error": str(e)
+        }
+
+
+def _update_citations_with_url_checks(
+    citations: List[Citation],
+    url_check_results: Dict[str, Dict[str, Any]]
+) -> List[Citation]:
+    """Update citations to remove inaccessible URLs."""
+    updated_citations = []
     
-    def _generate_follow_up_queries(self, unsupported_claims: List[str], 
-                                   llm_queries: List[str], topic: str) -> List[str]:
-        """
-        Generate follow-up search queries for unsupported claims.
+    for citation in citations:
+        accessible_urls = [
+            url for url in citation["urls"]
+            if url_check_results.get(url, {}).get("accessible", False)
+        ]
         
-        Args:
-            unsupported_claims: List of claims needing support
-            llm_queries: Queries suggested by LLM
-            topic: Original research topic
+        if accessible_urls:
+            updated_citation = citation.copy()
+            updated_citation["urls"] = accessible_urls
+            updated_citations.append(updated_citation)
+        else:
+            # Keep citation but mark as problematic
+            logger.warning(f"No accessible URLs for claim {citation['claim_id']}")
+            updated_citations.append(citation)
+    
+    return updated_citations
+
+
+def _generate_follow_up_queries(
+    unsupported_claims: List[Claim],
+    verification_results: List[Dict[str, Any]]
+) -> List[str]:
+    """Generate follow-up search queries for unsupported claims."""
+    follow_up_queries = []
+    
+    # Group unsupported claims by type
+    weak_claims = [
+        result for result in verification_results
+        if result["support_level"] in ["weak", "none"]
+    ]
+    
+    for result in weak_claims[:5]:  # Limit to 5 follow-up queries
+        claim = result["claim"]
+        claim_text = claim["text"]
         
-        Returns:
-            List of follow-up queries
-        """
-        queries = []
-        
-        # Add LLM-suggested queries
-        queries.extend(llm_queries)
-        
-        # Generate queries for unsupported claims
-        for claim in unsupported_claims[:5]:  # Limit to 5 claims
-            # Extract key terms from claim
-            key_terms = self._extract_key_terms(claim)
-            if key_terms:
-                # Create targeted search query
-                query = f"{topic} {' '.join(key_terms[:3])}"
-                if query not in queries:
-                    queries.append(query)
-        
-        # Add general follow-up queries if needed
-        if len(queries) < 3:
-            general_queries = [
-                f"{topic} recent research",
-                f"{topic} evidence studies",
-                f"{topic} expert analysis"
+        # Generate specific queries based on claim content
+        if claim["type"] == "fact":
+            queries = [
+                f'"{claim_text}" research evidence',
+                f'{_extract_key_terms(claim_text)} scientific study',
+                f'{_extract_key_terms(claim_text)} official report'
             ]
-            for query in general_queries:
-                if query not in queries:
-                    queries.append(query)
-                    if len(queries) >= 3:
-                        break
+        elif claim["type"] == "estimate":
+            queries = [
+                f'{_extract_key_terms(claim_text)} statistics data',
+                f'{_extract_key_terms(claim_text)} market research',
+                f'{_extract_key_terms(claim_text)} analysis report'
+            ]
+        else:  # opinion
+            queries = [
+                f'{_extract_key_terms(claim_text)} expert opinion',
+                f'{_extract_key_terms(claim_text)} industry analysis',
+                f'{_extract_key_terms(claim_text)} professional view'
+            ]
         
-        return queries[:6]  # Limit total follow-up queries
+        # Add the best query
+        if queries:
+            follow_up_queries.append(queries[0])
     
-    def _extract_key_terms(self, text: str) -> List[str]:
-        """
-        Extract key terms from text for query generation.
-        
-        Args:
-            text: Text to extract terms from
-        
-        Returns:
-            List of key terms
-        """
-        import re
-        
-        # Simple key term extraction
-        # Remove common stop words and extract meaningful terms
-        stop_words = {
-            'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 
-            'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 
-            'been', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 
-            'would', 'could', 'should', 'may', 'might', 'must', 'can'
-        }
-        
-        # Extract words (alphanumeric only)
-        words = re.findall(r'\b[a-zA-Z][a-zA-Z0-9]*\b', text.lower())
-        
-        # Filter out stop words and short words
-        key_terms = [word for word in words if word not in stop_words and len(word) > 2]
-        
-        # Return unique terms, preserving order
-        seen = set()
-        unique_terms = []
-        for term in key_terms:
-            if term not in seen:
-                seen.add(term)
-                unique_terms.append(term)
-        
-        return unique_terms
+    return follow_up_queries
+
+
+def _extract_key_terms(text: str) -> str:
+    """Extract key terms from claim text for search queries."""
+    # Simple extraction of important words (skip common words)
+    stop_words = {
+        "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", 
+        "of", "with", "by", "is", "are", "was", "were", "be", "been", "have", 
+        "has", "had", "that", "this", "these", "those", "will", "would", "could"
+    }
     
-    def _empty_verification_result(self, topic: str) -> Dict[str, Any]:
-        """Return empty verification result structure."""
-        return {
-            "research_topic": topic,
-            "total_claims": 0,
-            "verified_claims": [],
-            "unsupported_claims": [],
-            "follow_up_queries": [],
-            "coverage_issues": {
-                "unsupported_claims": [],
-                "weak_evidence_claims": [],
-                "orphaned_claims": [],
-                "total_issues": 0
-            },
-            "verification_metrics": {
-                "verified_claims": 0,
-                "partially_verified": 0,
-                "unverified_claims": 0,
-                "coverage_score": 0,
-                "needs_follow_up": False
-            },
-            "success": True
-        }
+    words = text.lower().split()
+    key_words = [word for word in words if word not in stop_words and len(word) > 3]
+    
+    return " ".join(key_words[:4])  # Return top 4 key terms
 
 
-# Global verifier instance
-verifier = Verifier()
+def _analyze_domain_diversity(
+    citations: List[Citation], 
+    documents: List[Document]
+) -> Dict[str, Any]:
+    """Analyze domain diversity in citations."""
+    
+    all_domains = set()
+    domain_counts = {}
+    
+    for citation in citations:
+        for url in citation["urls"]:
+            try:
+                domain = urlparse(url).netloc
+                all_domains.add(domain)
+                domain_counts[domain] = domain_counts.get(domain, 0) + 1
+            except Exception:
+                continue
+    
+    # Calculate diversity metrics
+    total_citations = sum(domain_counts.values())
+    unique_domains = len(all_domains)
+    
+    # Find most cited domains
+    top_domains = sorted(domain_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+    
+    return {
+        "unique_domains": unique_domains,
+        "total_citations": total_citations,
+        "diversity_ratio": unique_domains / total_citations if total_citations > 0 else 0,
+        "top_domains": top_domains,
+        "domain_distribution": domain_counts
+    }
 
 
-async def verify(analysis_result: Dict[str, Any]) -> Dict[str, Any]:
-    """Convenience function for claim verification."""
-    return await verifier.verify(analysis_result)
+# Utility functions for verification
+def calculate_citation_strength(citation: Citation, available_urls: Set[str]) -> float:
+    """Calculate citation strength score (0.0 to 1.0)."""
+    if not citation["urls"]:
+        return 0.0
+    
+    accessible_count = sum(1 for url in citation["urls"] if url in available_urls)
+    availability_score = accessible_count / len(citation["urls"])
+    
+    # Bonus for multiple sources
+    diversity_bonus = min(accessible_count / 2, 0.5)  # Up to 0.5 bonus for 2+ sources
+    
+    return min(availability_score + diversity_bonus, 1.0)
+
+
+def group_claims_by_support_level(
+    verification_results: List[Dict[str, Any]]
+) -> Dict[str, List[Claim]]:
+    """Group claims by their support level."""
+    grouped = {
+        "strong": [],
+        "adequate": [],
+        "weak": [],
+        "none": [],
+        "obvious": []
+    }
+    
+    for result in verification_results:
+        support_level = result["support_level"]
+        claim = result["claim"]
+        grouped[support_level].append(claim)
+    
+    return grouped

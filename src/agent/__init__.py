@@ -1,7 +1,4 @@
-"""
-Agent modules for Nova Brief research pipeline.
-"""
+"""Agent components for the research pipeline.
 
-from . import planner, searcher, reader, analyst, verifier, writer
-
-__all__ = ["planner", "searcher", "reader", "analyst", "verifier", "writer"]
+Contains the core agent modules: planner, searcher, reader, analyst, verifier, and writer.
+"""

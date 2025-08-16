@@ -1,381 +1,439 @@
-"""
-Analyst agent module for synthesizing content and tracking claim-to-source links.
-Analyzes gathered information and builds structured knowledge with citations.
-"""
+"""Analyst component for synthesizing information and extracting claims."""
 
+import uuid
 import json
-from typing import List, Dict, Any, Optional, Tuple
-from ..providers.cerebras_client import chat
+from typing import Dict, List, Any
+from ..providers.openrouter_client import chat, create_json_schema_format
+from ..storage.models import Document, Chunk, Claim, Citation
 from ..observability.logging import get_logger
-from ..observability.tracing import start_span, end_span
+from ..observability.tracing import TimedOperation, emit_event
 
 logger = get_logger(__name__)
 
 
-class Analyst:
-    """Analysis agent that synthesizes content and tracks claims."""
+ANALYSIS_SYSTEM_PROMPT = """You are a research analyst expert at synthesizing information from multiple sources. Your task is to:
+
+1. Extract precise, verifiable claims from the provided content
+2. Classify each claim as fact, estimate, or opinion
+3. Assign confidence scores (0.0-1.0) based on evidence quality
+4. Associate claims with their supporting source URLs
+5. Identify areas needing additional research
+
+Guidelines:
+- Focus on specific, verifiable statements rather than general observations
+- Prefer claims that can be backed by authoritative sources
+- Mark estimates and opinions appropriately
+- Higher confidence for facts from credible sources, lower for opinions
+- Include diverse perspectives when available
+- Flag claims that need stronger evidence
+
+Respond in JSON format with claims and preliminary sections."""
+
+
+async def analyze(
+    documents: List[Document],
+    chunks: List[Chunk],
+    sub_questions: List[str],
+    topic: str
+) -> Dict[str, Any]:
+    """
+    Analyze documents and chunks to extract claims and draft sections.
     
-    def __init__(self):
-        self.max_chunks_per_analysis = 20
-        self.analysis_prompt = """You are a research analyst. Analyze the provided content chunks and extract key findings, insights, and claims.
-
-For each significant claim or fact you identify:
-1. State the claim clearly
-2. Identify which source(s) support this claim
-3. Note the strength of evidence (strong, moderate, weak)
-4. Identify any contradictions or gaps
-
-IMPORTANT: You must respond with ONLY valid JSON, no markdown, no explanations, no backticks. Start your response with {{ and end with }}.
-
-Use this exact structure:
-{{
-  "analysis": {{
-    "main_findings": ["finding 1", "finding 2"],
-    "claims": [
-      {{
-        "claim": "specific claim or fact",
-        "supporting_sources": ["chunk_id_1", "chunk_id_2"],
-        "evidence_strength": "strong|moderate|weak",
-        "claim_type": "factual|opinion|statistical|definition",
-        "confidence": 0.9
-      }}
-    ],
-    "contradictions": [
-      {{
-        "claim_1": "first conflicting claim",
-        "claim_2": "second conflicting claim",
-        "sources_1": ["chunk_id"],
-        "sources_2": ["chunk_id"]
-      }}
-    ],
-    "knowledge_gaps": ["gap 1", "gap 2"],
-    "summary": "brief summary of key insights"
-  }}
-}}
-
-Content chunks to analyze:
-{chunks_text}"""
+    Args:
+        documents: List of processed documents
+        chunks: List of text chunks for analysis
+        sub_questions: Research sub-questions to address
+        topic: Main research topic
     
-    async def analyze(self, chunks: List[Dict[str, Any]], research_topic: str) -> Dict[str, Any]:
-        """
-        Analyze content chunks and extract structured knowledge.
-        
-        Args:
-            chunks: List of content chunks from reader
-            research_topic: Original research topic for context
-        
-        Returns:
-            Dict containing analysis results with claims and citations
-        """
-        span_id = start_span("analyze", "agent", {
-            "chunk_count": len(chunks),
-            "topic": research_topic
-        })
-        
+    Returns:
+        Dictionary with success status, claims, citations, and draft sections
+    """
+    with TimedOperation("agent_analyst") as timer:
         try:
-            logger.info(f"Analyzing {len(chunks)} content chunks for topic: {research_topic}")
-            
             if not chunks:
-                return self._empty_analysis_result(research_topic)
+                return {
+                    "success": False,
+                    "error": "No content chunks provided for analysis",
+                    "claims": [],
+                    "citations": [],
+                    "draft_sections": []
+                }
             
-            # Process chunks in batches to stay within token limits
+            logger.info(f"Analyzing {len(chunks)} chunks from {len(documents)} documents")
+            
+            # Group chunks by document for better context
+            chunks_by_doc = _group_chunks_by_document(chunks)
+            
+            # Analyze in batches to handle large content volumes
             all_claims = []
-            all_contradictions = []
-            all_findings = []
-            all_gaps = []
+            all_citations = []
+            all_sections = []
             
-            batch_size = min(self.max_chunks_per_analysis, len(chunks))
+            batch_size = 5  # Process 5 documents at a time
+            doc_urls = list(chunks_by_doc.keys())
             
-            for i in range(0, len(chunks), batch_size):
-                batch_chunks = chunks[i:i + batch_size]
-                batch_analysis = await self._analyze_chunk_batch(batch_chunks, research_topic)
+            for i in range(0, len(doc_urls), batch_size):
+                batch_urls = doc_urls[i:i + batch_size]
+                batch_result = await _analyze_document_batch(
+                    batch_urls, 
+                    chunks_by_doc, 
+                    documents,
+                    sub_questions, 
+                    topic
+                )
                 
-                if batch_analysis["success"]:
-                    analysis_data = batch_analysis["analysis"]
-                    all_claims.extend(analysis_data.get("claims", []))
-                    all_contradictions.extend(analysis_data.get("contradictions", []))
-                    all_findings.extend(analysis_data.get("main_findings", []))
-                    all_gaps.extend(analysis_data.get("knowledge_gaps", []))
+                if batch_result["success"]:
+                    all_claims.extend(batch_result["claims"])
+                    all_citations.extend(batch_result["citations"])
+                    all_sections.extend(batch_result["sections"])
+                else:
+                    logger.warning(f"Batch analysis failed: {batch_result.get('error')}")
             
-            # Deduplicate and consolidate results
-            consolidated_claims = self._consolidate_claims(all_claims)
-            unique_findings = list(dict.fromkeys(all_findings))  # Remove duplicates
-            unique_gaps = list(dict.fromkeys(all_gaps))
+            # Deduplicate and merge similar claims
+            final_claims, final_citations = _deduplicate_claims(all_claims, all_citations)
             
-            # Create claim-to-source mapping
-            claim_source_map = self._build_claim_source_map(consolidated_claims)
+            # Create structured draft sections
+            draft_sections = _create_draft_sections(final_claims, all_sections, topic)
             
-            # Calculate coverage metrics
-            total_chunks = len(chunks)
-            cited_chunks = len(set(
-                source for claim in consolidated_claims 
-                for source in claim.get("supporting_sources", [])
-            ))
+            # Calculate analysis metrics
+            confidence_scores = [claim["confidence"] for claim in final_claims]
+            avg_confidence = sum(confidence_scores) / len(confidence_scores) if confidence_scores else 0.0
             
-            result = {
-                "research_topic": research_topic,
-                "total_chunks_analyzed": total_chunks,
-                "claims": consolidated_claims,
-                "main_findings": unique_findings,
-                "contradictions": all_contradictions,
-                "knowledge_gaps": unique_gaps,
-                "claim_source_map": claim_source_map,
-                "metrics": {
-                    "total_claims": len(consolidated_claims),
-                    "cited_chunks": cited_chunks,
-                    "chunk_coverage": cited_chunks / max(total_chunks, 1),
-                    "claims_per_chunk": len(consolidated_claims) / max(total_chunks, 1),
-                    "contradictions_found": len(all_contradictions),
-                    "knowledge_gaps": len(unique_gaps)
-                },
-                "success": True
+            # Count claims by type
+            claim_types = {}
+            for claim in final_claims:
+                claim_type = claim["type"]
+                claim_types[claim_type] = claim_types.get(claim_type, 0) + 1
+            
+            # Calculate source diversity
+            all_source_urls = set()
+            for citation in final_citations:
+                all_source_urls.update(citation["urls"])
+            
+            source_domains = set()
+            for url in all_source_urls:
+                try:
+                    from urllib.parse import urlparse
+                    domain = urlparse(url).netloc
+                    source_domains.add(domain)
+                except Exception:
+                    continue
+            
+            metadata = {
+                "documents_analyzed": len(documents),
+                "chunks_analyzed": len(chunks),
+                "claims_extracted": len(final_claims),
+                "citations_created": len(final_citations),
+                "avg_confidence": round(avg_confidence, 3),
+                "claim_types": claim_types,
+                "source_diversity": len(source_domains),
+                "draft_sections": len(draft_sections)
             }
             
-            logger.info(f"Analysis completed: {len(consolidated_claims)} claims extracted, {cited_chunks}/{total_chunks} chunks cited")
-            end_span(span_id, success=True, additional_data={
-                "total_claims": len(consolidated_claims),
-                "chunk_coverage": cited_chunks / max(total_chunks, 1)
-            })
+            logger.info(
+                f"Analysis completed: {len(final_claims)} claims, {len(final_citations)} citations",
+                extra=metadata
+            )
             
-            return result
+            emit_event(
+                "analysis_completed",
+                metadata=metadata
+            )
+            
+            return {
+                "success": True,
+                "claims": final_claims,
+                "citations": final_citations,
+                "draft_sections": draft_sections,
+                "metadata": metadata
+            }
             
         except Exception as e:
-            error_msg = f"Analysis failed for topic '{research_topic}': {e}"
-            logger.error(error_msg)
-            end_span(span_id, success=False, error=error_msg)
+            logger.error(f"Analysis failed: {e}")
+            emit_event(
+                "analysis_error",
+                metadata={
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                    "documents_count": len(documents) if documents else 0,
+                    "chunks_count": len(chunks) if chunks else 0
+                }
+            )
+            
             return {
-                "research_topic": research_topic,
-                "total_chunks_analyzed": len(chunks),
+                "success": False,
+                "error": str(e),
+                "error_type": type(e).__name__,
                 "claims": [],
-                "main_findings": [],
-                "contradictions": [],
-                "knowledge_gaps": [],
-                "claim_source_map": {},
-                "metrics": {
-                    "total_claims": 0,
-                    "cited_chunks": 0,
-                    "chunk_coverage": 0,
-                    "claims_per_chunk": 0,
-                    "contradictions_found": 0,
-                    "knowledge_gaps": 0
+                "citations": [],
+                "draft_sections": []
+            }
+
+
+async def _analyze_document_batch(
+    doc_urls: List[str],
+    chunks_by_doc: Dict[str, List[Chunk]],
+    documents: List[Document],
+    sub_questions: List[str],
+    topic: str
+) -> Dict[str, Any]:
+    """Analyze a batch of documents using LLM."""
+    try:
+        # Prepare content summary for LLM
+        doc_summaries = []
+        
+        for doc_url in doc_urls:
+            doc_chunks = chunks_by_doc[doc_url]
+            
+            # Find document metadata
+            doc_info = next((doc for doc in documents if doc["url"] == doc_url), None)
+            doc_title = doc_info["title"] if doc_info else "Unknown"
+            
+            # Combine chunks for this document
+            combined_text = "\n\n".join([chunk["text"] for chunk in doc_chunks])
+            
+            # Limit text length for LLM context
+            if len(combined_text) > 4000:
+                combined_text = combined_text[:4000] + "..."
+            
+            doc_summaries.append({
+                "url": doc_url,
+                "title": doc_title,
+                "content": combined_text
+            })
+        
+        # Prepare analysis prompt
+        content_text = ""
+        for i, doc_summary in enumerate(doc_summaries, 1):
+            content_text += f"\n=== Source {i}: {doc_summary['title']} ===\n"
+            content_text += f"URL: {doc_summary['url']}\n"
+            content_text += f"Content: {doc_summary['content']}\n"
+        
+        user_prompt = f"""Research Topic: {topic}
+
+Sub-questions to address:
+{chr(10).join(f"- {q}" for q in sub_questions)}
+
+Source Content:
+{content_text}
+
+Extract specific claims from this content, focusing on verifiable facts, estimates, and expert opinions. Associate each claim with its source URLs."""
+
+        # Define JSON schema for structured output
+        json_schema = {
+            "type": "object",
+            "properties": {
+                "claims": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string"},
+                            "type": {"type": "string", "enum": ["fact", "estimate", "opinion"]},
+                            "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                            "source_urls": {
+                                "type": "array",
+                                "items": {"type": "string"}
+                            }
+                        },
+                        "required": ["text", "type", "confidence", "source_urls"]
+                    }
                 },
-                "success": False,
-                "error": str(e)
-            }
-    
-    async def _analyze_chunk_batch(self, chunks: List[Dict[str, Any]], topic: str) -> Dict[str, Any]:
-        """
-        Analyze a batch of chunks using LLM.
-        
-        Args:
-            chunks: Batch of content chunks
-            topic: Research topic for context
-        
-        Returns:
-            Analysis results for the batch
-        """
-        try:
-            # Prepare chunks text for analysis
-            chunks_text = ""
-            for chunk in chunks:
-                chunk_id = chunk.get("chunk_id", "unknown")
-                text = chunk.get("text", "")
-                title = chunk.get("document_title", "")
-                url = chunk.get("document_url", "")
-                
-                chunks_text += f"\n--- CHUNK ID: {chunk_id} ---\n"
-                chunks_text += f"Title: {title}\n"
-                chunks_text += f"URL: {url}\n"
-                chunks_text += f"Content: {text}\n"
-            
-            # Create analysis prompt
-            prompt = self.analysis_prompt.format(chunks_text=chunks_text)
-            
-            # Get analysis from LLM
-            messages = [
-                {"role": "system", "content": f"You are analyzing content about: {topic}"},
-                {"role": "user", "content": prompt}
-            ]
-            
-            response = chat(messages, temperature=0.2, max_tokens=2000)
-            analysis_text = response["content"]
-            
-            # Parse JSON response
-            try:
-                analysis_data = json.loads(analysis_text)
-                return {
-                    "analysis": analysis_data.get("analysis", {}),
-                    "tokens_used": response["usage"]["total_tokens"],
-                    "success": True
+                "sections": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Draft section headings or key themes identified"
                 }
-            except json.JSONDecodeError:
-                # Fallback parsing if JSON fails
-                logger.warning("Failed to parse JSON analysis, using fallback")
-                fallback_analysis = self._fallback_parse_analysis(analysis_text, chunks)
-                return {
-                    "analysis": fallback_analysis,
-                    "tokens_used": response["usage"]["total_tokens"],
-                    "success": True
-                }
-        
-        except Exception as e:
-            logger.error(f"Batch analysis failed: {e}")
-            return {
-                "analysis": {},
-                "success": False,
-                "error": str(e)
-            }
-    
-    def _fallback_parse_analysis(self, analysis_text: str, chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Fallback parser for when JSON parsing fails.
-        
-        Args:
-            analysis_text: Raw analysis text
-            chunks: Original chunks for reference
-        
-        Returns:
-            Basic analysis structure
-        """
-        # Extract simple findings from text
-        lines = analysis_text.split('\n')
-        findings = []
-        claims = []
-        
-        chunk_ids = [chunk.get("chunk_id", f"chunk_{i}") for i, chunk in enumerate(chunks)]
-        
-        for line in lines:
-            line = line.strip()
-            if line and (line.startswith('-') or line.startswith('•') or '.' in line):
-                cleaned_line = line.lstrip('-•').strip()
-                if len(cleaned_line) > 20:  # Substantial content
-                    findings.append(cleaned_line)
-                    
-                    # Create a basic claim from the finding
-                    if len(claims) < 10:  # Limit fallback claims
-                        claims.append({
-                            "claim": cleaned_line,
-                            "supporting_sources": chunk_ids[:2],  # Reference first chunks
-                            "evidence_strength": "moderate",
-                            "claim_type": "factual",
-                            "confidence": 0.6
-                        })
-        
-        return {
-            "main_findings": findings[:10],  # Limit findings
-            "claims": claims,
-            "contradictions": [],
-            "knowledge_gaps": [],
-            "summary": "Analysis completed with fallback parsing"
-        }
-    
-    def _consolidate_claims(self, claims: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Consolidate and deduplicate similar claims.
-        
-        Args:
-            claims: List of claims from different batches
-        
-        Returns:
-            Consolidated list of unique claims
-        """
-        if not claims:
-            return []
-        
-        # Simple deduplication based on claim text similarity
-        consolidated = []
-        seen_claims = set()
-        
-        for claim in claims:
-            claim_text = claim.get("claim", "").lower().strip()
-            
-            # Simple similarity check (could be enhanced with embedding similarity)
-            is_duplicate = False
-            for seen in seen_claims:
-                if self._claims_similar(claim_text, seen):
-                    is_duplicate = True
-                    break
-            
-            if not is_duplicate and claim_text:
-                seen_claims.add(claim_text)
-                consolidated.append(claim)
-        
-        return consolidated
-    
-    def _claims_similar(self, claim1: str, claim2: str, threshold: float = 0.8) -> bool:
-        """
-        Check if two claims are similar (simple implementation).
-        
-        Args:
-            claim1: First claim text
-            claim2: Second claim text
-            threshold: Similarity threshold
-        
-        Returns:
-            True if claims are similar
-        """
-        # Simple word overlap similarity
-        words1 = set(claim1.lower().split())
-        words2 = set(claim2.lower().split())
-        
-        if not words1 or not words2:
-            return False
-        
-        intersection = len(words1.intersection(words2))
-        union = len(words1.union(words2))
-        
-        similarity = intersection / union if union > 0 else 0
-        return similarity >= threshold
-    
-    def _build_claim_source_map(self, claims: List[Dict[str, Any]]) -> Dict[str, List[str]]:
-        """
-        Build mapping from source chunks to claims they support.
-        
-        Args:
-            claims: List of claims with sources
-        
-        Returns:
-            Dict mapping chunk IDs to claim texts
-        """
-        source_map = {}
-        
-        for claim in claims:
-            claim_text = claim.get("claim", "")
-            sources = claim.get("supporting_sources", [])
-            
-            for source in sources:
-                if source not in source_map:
-                    source_map[source] = []
-                source_map[source].append(claim_text)
-        
-        return source_map
-    
-    def _empty_analysis_result(self, topic: str) -> Dict[str, Any]:
-        """Return empty analysis result structure."""
-        return {
-            "research_topic": topic,
-            "total_chunks_analyzed": 0,
-            "claims": [],
-            "main_findings": [],
-            "contradictions": [],
-            "knowledge_gaps": ["No content available for analysis"],
-            "claim_source_map": {},
-            "metrics": {
-                "total_claims": 0,
-                "cited_chunks": 0,
-                "chunk_coverage": 0,
-                "claims_per_chunk": 0,
-                "contradictions_found": 0,
-                "knowledge_gaps": 1
             },
-            "success": True
+            "required": ["claims", "sections"],
+            "additionalProperties": False
+        }
+        
+        # Call LLM for analysis
+        messages = [
+            {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt}
+        ]
+        
+        response = await chat(
+            messages=messages,
+            temperature=0.1,
+            max_tokens=2000,
+            response_format=create_json_schema_format(json_schema)
+        )
+        
+        if not response["success"]:
+            return {
+                "success": False,
+                "error": f"LLM analysis failed: {response.get('error')}",
+                "claims": [],
+                "citations": [],
+                "sections": []
+            }
+        
+        # Parse LLM response
+        try:
+            content = response.get("content", "")
+            if not content:
+                raise ValueError("Empty response content")
+            
+            analysis_result = json.loads(content)
+            raw_claims = analysis_result.get("claims", [])
+            sections = analysis_result.get("sections", [])
+            
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.error(f"Failed to parse analysis response: {e}")
+            return {
+                "success": False,
+                "error": f"Response parsing failed: {str(e)}",
+                "claims": [],
+                "citations": [],
+                "sections": []
+            }
+        
+        # Process claims and create citations
+        claims = []
+        citations = []
+        
+        for raw_claim in raw_claims:
+            try:
+                claim_id = str(uuid.uuid4())[:8]
+                
+                claim: Claim = {
+                    "id": claim_id,
+                    "text": raw_claim["text"],
+                    "type": raw_claim["type"],
+                    "confidence": float(raw_claim["confidence"]),
+                    "source_urls": raw_claim["source_urls"]
+                }
+                
+                # Validate URLs are from our document set
+                valid_urls = [url for url in raw_claim["source_urls"] if url in doc_urls]
+                if valid_urls:
+                    claim["source_urls"] = valid_urls
+                    claims.append(claim)
+                    
+                    # Create citation
+                    citation: Citation = {
+                        "claim_id": claim_id,
+                        "urls": valid_urls,
+                        "citation_number": None  # Will be assigned later
+                    }
+                    citations.append(citation)
+                
+            except Exception as e:
+                logger.warning(f"Error processing claim: {e}")
+                continue
+        
+        return {
+            "success": True,
+            "claims": claims,
+            "citations": citations,
+            "sections": sections
+        }
+        
+    except Exception as e:
+        logger.error(f"Batch analysis failed: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "claims": [],
+            "citations": [],
+            "sections": []
         }
 
 
-# Global analyst instance
-analyst = Analyst()
+def _group_chunks_by_document(chunks: List[Chunk]) -> Dict[str, List[Chunk]]:
+    """Group chunks by their source document URL."""
+    grouped = {}
+    for chunk in chunks:
+        doc_url = chunk["doc_url"]
+        if doc_url not in grouped:
+            grouped[doc_url] = []
+        grouped[doc_url].append(chunk)
+    return grouped
 
 
-async def analyze(chunks: List[Dict[str, Any]], research_topic: str) -> Dict[str, Any]:
-    """Convenience function for content analysis."""
-    return await analyst.analyze(chunks, research_topic)
+def _deduplicate_claims(claims: List[Claim], citations: List[Citation]) -> tuple[List[Claim], List[Citation]]:
+    """Remove duplicate or very similar claims."""
+    # Simple deduplication based on text similarity
+    unique_claims = []
+    unique_citations = []
+    seen_texts = set()
+    
+    for i, claim in enumerate(claims):
+        claim_text = claim["text"].lower().strip()
+        
+        # Check for exact duplicates
+        if claim_text in seen_texts:
+            continue
+        
+        # Check for very similar claims (simple heuristic)
+        is_duplicate = False
+        for seen_text in seen_texts:
+            if _texts_are_similar(claim_text, seen_text):
+                is_duplicate = True
+                break
+        
+        if not is_duplicate:
+            unique_claims.append(claim)
+            seen_texts.add(claim_text)
+            
+            # Find corresponding citation
+            citation = next((c for c in citations if c["claim_id"] == claim["id"]), None)
+            if citation:
+                unique_citations.append(citation)
+    
+    return unique_claims, unique_citations
+
+
+def _texts_are_similar(text1: str, text2: str, threshold: float = 0.8) -> bool:
+    """Check if two texts are very similar (simple word overlap)."""
+    words1 = set(text1.split())
+    words2 = set(text2.split())
+    
+    if not words1 or not words2:
+        return False
+    
+    intersection = words1.intersection(words2)
+    union = words1.union(words2)
+    
+    similarity = len(intersection) / len(union)
+    return similarity >= threshold
+
+
+def _create_draft_sections(claims: List[Claim], sections: List[str], topic: str) -> List[str]:
+    """Create structured draft sections from claims and suggested sections."""
+    # Combine and deduplicate section suggestions
+    all_sections = []
+    
+    # Add topic-based intro section
+    all_sections.append(f"Introduction to {topic}")
+    
+    # Add sections from analysis
+    for section in sections:
+        if section and section not in all_sections:
+            all_sections.append(section)
+    
+    # Add standard sections based on claim types
+    fact_claims = [c for c in claims if c["type"] == "fact"]
+    estimate_claims = [c for c in claims if c["type"] == "estimate"]
+    opinion_claims = [c for c in claims if c["type"] == "opinion"]
+    
+    if fact_claims:
+        all_sections.append("Key Facts and Findings")
+    if estimate_claims:
+        all_sections.append("Current Estimates and Projections")
+    if opinion_claims:
+        all_sections.append("Expert Opinions and Analysis")
+    
+    # Add conclusion
+    all_sections.append("Summary and Implications")
+    
+    # Remove duplicates while preserving order
+    unique_sections = []
+    for section in all_sections:
+        if section not in unique_sections:
+            unique_sections.append(section)
+    
+    return unique_sections[:6]  # Limit to 6 sections

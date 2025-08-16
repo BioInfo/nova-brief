@@ -1,315 +1,336 @@
-"""
-Reader agent module for fetching and processing web content.
-Coordinates content extraction from URLs and manages text processing.
-"""
+"""Reader component for fetching URLs and processing content into documents and chunks."""
 
 import asyncio
-from typing import List, Dict, Any, Optional
+from typing import Dict, List, Any, Optional
 from ..tools.fetch_url import run as fetch_url_run
 from ..tools.parse_pdf import run as parse_pdf_run
+from ..storage.models import SearchResult, Document, Chunk, Constraints, create_chunks_from_document
 from ..observability.logging import get_logger
-from ..observability.tracing import start_span, end_span
+from ..observability.tracing import TimedOperation, emit_event
 
 logger = get_logger(__name__)
 
 
-class Reader:
-    """Content reading agent that fetches and processes documents."""
+async def read(
+    search_results: List[SearchResult],
+    constraints: Constraints
+) -> Dict[str, Any]:
+    """
+    Fetch URLs and process content into documents and chunks.
     
-    def __init__(self):
-        self.max_concurrent_fetches = 5
-        self.max_content_length = 50000  # Limit content per document
-        self.chunk_size = 2000  # Size for text chunking
-        self.chunk_overlap = 200  # Overlap between chunks
+    Args:
+        search_results: List of search results to fetch and process
+        constraints: Research constraints including timeouts
     
-    async def read(self, search_results: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Fetch and process content from search results.
-        
-        Args:
-            search_results: List of search results with URLs
-        
-        Returns:
-            Dict containing processed documents and chunks
-        """
-        span_id = start_span("read", "agent", {
-            "url_count": len(search_results)
-        })
-        
+    Returns:
+        Dictionary with success status, documents, chunks, and metadata
+    """
+    with TimedOperation("agent_reader") as timer:
         try:
-            logger.info(f"Reading content from {len(search_results)} URLs")
+            if not search_results:
+                return {
+                    "success": False,
+                    "error": "No search results provided",
+                    "documents": [],
+                    "chunks": []
+                }
             
-            # Extract unique URLs from search results
-            urls_to_fetch = []
-            for result in search_results:
-                url = result.get("url")
-                if url and url not in [item["url"] for item in urls_to_fetch]:
-                    urls_to_fetch.append({
-                        "url": url,
-                        "title": result.get("title", ""),
-                        "snippet": result.get("snippet", ""),
-                        "domain": result.get("domain", "")
-                    })
+            urls = [result["url"] for result in search_results]
+            logger.info(f"Reading {len(urls)} URLs")
             
-            # Fetch content concurrently in batches
-            all_documents = []
+            # Extract configuration
+            fetch_timeout = constraints.get("fetch_timeout_s", 15.0)
+            max_tokens_per_chunk = constraints.get("max_tokens_per_chunk", 1000)
             
-            for i in range(0, len(urls_to_fetch), self.max_concurrent_fetches):
-                batch = urls_to_fetch[i:i + self.max_concurrent_fetches]
-                batch_documents = await self._fetch_content_batch(batch)
-                all_documents.extend(batch_documents)
+            # Fetch URLs concurrently with controlled concurrency
+            documents = []
+            chunks = []
+            fetch_results = await _fetch_urls_concurrent(urls, fetch_timeout)
             
-            # Process successful documents
-            processed_documents = []
-            all_chunks = []
+            # Process each fetch result
+            successful_fetches = 0
+            failed_fetches = 0
             
-            for doc in all_documents:
-                if doc["success"] and doc.get("text"):
-                    # Process and chunk the document
-                    processed_doc = self._process_document(doc)
-                    chunks = self._create_chunks(processed_doc)
+            for i, fetch_result in enumerate(fetch_results):
+                try:
+                    search_result = search_results[i]
+                    url = urls[i]
                     
-                    processed_documents.append(processed_doc)
-                    all_chunks.extend(chunks)
+                    if not fetch_result["success"]:
+                        logger.warning(f"Failed to fetch {url}: {fetch_result.get('error')}")
+                        failed_fetches += 1
+                        continue
+                    
+                    # Create document from fetch result
+                    document = _create_document_from_fetch_result(fetch_result, search_result)
+                    if not document:
+                        failed_fetches += 1
+                        continue
+                    
+                    documents.append(document)
+                    successful_fetches += 1
+                    
+                    # Create chunks from document
+                    doc_chunks = create_chunks_from_document(document, max_tokens_per_chunk)
+                    chunks.extend(doc_chunks)
+                    
+                    logger.debug(f"Processed {url}: {len(doc_chunks)} chunks")
+                    
+                except Exception as e:
+                    logger.error(f"Error processing result for {urls[i]}: {e}")
+                    failed_fetches += 1
+                    continue
             
             # Calculate metrics
-            successful_fetches = len(processed_documents)
-            total_attempts = len(urls_to_fetch)
-            total_chunks = len(all_chunks)
-            total_text_length = sum(len(doc.get("text", "")) for doc in processed_documents)
+            total_text_length = sum(len(doc["text"]) for doc in documents)
+            total_chunks = len(chunks)
+            avg_chunk_size = total_text_length / total_chunks if total_chunks > 0 else 0
             
-            result = {
-                "source_urls": [item["url"] for item in urls_to_fetch],
-                "documents": processed_documents,
-                "chunks": all_chunks,
-                "metrics": {
-                    "total_urls": total_attempts,
-                    "successful_fetches": successful_fetches,
-                    "fetch_success_rate": successful_fetches / max(total_attempts, 1),
-                    "total_chunks": total_chunks,
-                    "total_text_length": total_text_length,
-                    "average_text_length": total_text_length / max(successful_fetches, 1)
-                },
-                "success": successful_fetches > 0
+            # Extract domain diversity
+            domains = set()
+            for doc in documents:
+                try:
+                    from urllib.parse import urlparse
+                    domain = urlparse(doc["url"]).netloc
+                    domains.add(domain)
+                except Exception:
+                    continue
+            
+            metadata = {
+                "urls_requested": len(urls),
+                "successful_fetches": successful_fetches,
+                "failed_fetches": failed_fetches,
+                "documents_created": len(documents),
+                "chunks_created": total_chunks,
+                "total_text_length": total_text_length,
+                "avg_chunk_size": int(avg_chunk_size),
+                "domain_diversity": len(domains),
+                "fetch_timeout": fetch_timeout
             }
             
-            logger.info(f"Content reading completed: {successful_fetches}/{total_attempts} URLs successful, {total_chunks} chunks created")
-            end_span(span_id, success=True, additional_data={
-                "successful_fetches": successful_fetches,
-                "total_chunks": total_chunks
-            })
+            logger.info(
+                f"Reading completed: {successful_fetches}/{len(urls)} URLs, "
+                f"{len(documents)} documents, {total_chunks} chunks",
+                extra=metadata
+            )
             
-            return result
+            emit_event(
+                "reading_completed",
+                metadata=metadata
+            )
+            
+            return {
+                "success": True,
+                "documents": documents,
+                "chunks": chunks,
+                "metadata": metadata
+            }
             
         except Exception as e:
-            error_msg = f"Content reading failed: {e}"
-            logger.error(error_msg)
-            end_span(span_id, success=False, error=error_msg)
+            logger.error(f"Reading operation failed: {e}")
+            emit_event(
+                "reading_error",
+                metadata={
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                    "urls_count": len(search_results) if search_results else 0
+                }
+            )
+            
             return {
-                "source_urls": [],
-                "documents": [],
-                "chunks": [],
-                "metrics": {
-                    "total_urls": 0,
-                    "successful_fetches": 0,
-                    "fetch_success_rate": 0,
-                    "total_chunks": 0,
-                    "total_text_length": 0,
-                    "average_text_length": 0
-                },
                 "success": False,
-                "error": str(e)
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "documents": [],
+                "chunks": []
             }
+
+
+async def _fetch_urls_concurrent(urls: List[str], timeout: float, max_concurrent: int = 5) -> List[Dict[str, Any]]:
+    """Fetch URLs concurrently with controlled concurrency."""
+    semaphore = asyncio.Semaphore(max_concurrent)
     
-    async def _fetch_content_batch(self, url_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Fetch content from a batch of URLs concurrently.
+    async def fetch_with_semaphore(url: str) -> Dict[str, Any]:
+        async with semaphore:
+            return await fetch_url_run(url, timeout=timeout)
+    
+    # Execute all fetches concurrently
+    tasks = [fetch_with_semaphore(url) for url in urls]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Convert exceptions to error results
+    processed_results = []
+    for i, result in enumerate(results):
+        if isinstance(result, Exception):
+            processed_results.append({
+                "success": False,
+                "error": str(result),
+                "error_type": type(result).__name__,
+                "url": urls[i]
+            })
+        else:
+            processed_results.append(result)
+    
+    return processed_results
+
+
+def _create_document_from_fetch_result(
+    fetch_result: Dict[str, Any],
+    search_result: SearchResult
+) -> Optional[Document]:
+    """Create a Document from fetch result and search result."""
+    try:
+        url = fetch_result["url"]
+        content_type = fetch_result.get("content_type", "text/html")
         
-        Args:
-            url_items: Batch of URL items to fetch
-        
-        Returns:
-            List of fetched content results
-        """
-        tasks = []
-        for item in url_items:
-            url = item["url"]
-            
-            # Determine content type and use appropriate tool
-            if url.lower().endswith('.pdf'):
-                task = self._fetch_pdf_content(item)
+        # Handle PDF content
+        if content_type == "application/pdf":
+            # PDF parsing was already handled in fetch_url, but if raw content returned
+            raw_content = fetch_result.get("raw_content")
+            if raw_content and not fetch_result.get("text"):
+                # Parse PDF content
+                import asyncio
+                pdf_result = asyncio.run(parse_pdf_run(raw_content))
+                if pdf_result["success"]:
+                    text = pdf_result["text"]
+                    title = pdf_result.get("metadata", {}).get("title", "") or search_result["title"]
+                else:
+                    logger.warning(f"Failed to parse PDF content from {url}")
+                    return None
             else:
-                task = self._fetch_web_content(item)
-            
-            tasks.append(task)
+                text = fetch_result.get("text", "")
+                title = fetch_result.get("title", "") or search_result["title"]
+        else:
+            # HTML or text content
+            text = fetch_result.get("text", "")
+            title = fetch_result.get("title", "") or search_result["title"]
         
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # Validate content
+        if not text or len(text.strip()) < 50:
+            logger.warning(f"Insufficient content from {url}: {len(text)} chars")
+            return None
         
-        # Handle exceptions
-        formatted_results = []
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                formatted_results.append({
-                    "url": url_items[i]["url"],
-                    "success": False,
-                    "error": str(result),
-                    "title": url_items[i].get("title", ""),
-                    "domain": url_items[i].get("domain", "")
-                })
-            else:
-                formatted_results.append(result)
+        # Extract domain for metadata
+        try:
+            from urllib.parse import urlparse
+            parsed_url = urlparse(url)
+            domain = parsed_url.netloc
+            path = parsed_url.path
+        except Exception:
+            domain = "unknown"
+            path = ""
         
-        return formatted_results
-    
-    async def _fetch_web_content(self, item: Dict[str, Any]) -> Dict[str, Any]:
-        """Fetch content from a web URL."""
-        result = await fetch_url_run(item["url"], extract_text=True)
-        
-        # Enhance with search result metadata
-        if result["success"]:
-            result["search_title"] = item.get("title", "")
-            result["search_snippet"] = item.get("snippet", "")
-            result["domain"] = item.get("domain", "")
-        
-        return result
-    
-    async def _fetch_pdf_content(self, item: Dict[str, Any]) -> Dict[str, Any]:
-        """Fetch and parse PDF content."""
-        result = await parse_pdf_run(item["url"], extract_metadata=True)
-        
-        # Enhance with search result metadata
-        if result["success"]:
-            result["search_title"] = item.get("title", "")
-            result["search_snippet"] = item.get("snippet", "")
-            result["domain"] = item.get("domain", "")
-            result["content_type"] = "application/pdf"
-        
-        return result
-    
-    def _process_document(self, doc: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Process and clean document content.
-        
-        Args:
-            doc: Raw document from fetch operation
-        
-        Returns:
-            Processed document with cleaned content
-        """
-        text = doc.get("text", "")
-        
-        # Limit content length
-        if len(text) > self.max_content_length:
-            text = text[:self.max_content_length]
-            doc["truncated"] = True
-        
-        # Basic text cleaning
-        text = self._clean_text(text)
-        
-        processed_doc = {
-            "url": doc["url"],
-            "title": doc.get("title") or doc.get("search_title", ""),
-            "domain": doc.get("domain", ""),
-            "text": text,
-            "text_length": len(text),
-            "content_type": doc.get("content_type", "text/html"),
-            "fetch_timestamp": doc.get("timestamp"),
-            "truncated": doc.get("truncated", False)
+        # Create document
+        document: Document = {
+            "url": url,
+            "title": title.strip() if title else "",
+            "text": text.strip(),
+            "content_type": content_type,
+            "source_meta": {
+                "domain": domain,
+                "path": path,
+                "snippet": search_result["snippet"],
+                "content_length": len(text),
+                "fetch_metadata": fetch_result.get("metadata", {})
+            }
         }
         
-        # Add metadata if available
-        if "metadata" in doc:
-            processed_doc["metadata"] = doc["metadata"]
+        return document
         
-        return processed_doc
+    except Exception as e:
+        logger.error(f"Error creating document from fetch result: {e}")
+        return None
+
+
+def _detect_content_language(text: str) -> str:
+    """Simple language detection based on common words."""
+    if not text:
+        return "unknown"
     
-    def _clean_text(self, text: str) -> str:
-        """
-        Clean and normalize text content.
-        
-        Args:
-            text: Raw text content
-        
-        Returns:
-            Cleaned text
-        """
-        # Basic text cleaning
-        import re
-        
-        # Remove excessive whitespace
-        text = re.sub(r'\s+', ' ', text)
-        
-        # Remove control characters
-        text = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', text)
-        
-        # Normalize line breaks
-        text = text.replace('\r\n', '\n').replace('\r', '\n')
-        
-        return text.strip()
+    # Very basic detection - count common English words
+    english_words = {
+        "the", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with",
+        "a", "an", "is", "are", "was", "were", "be", "been", "have", "has", "had"
+    }
     
-    def _create_chunks(self, doc: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """
-        Create text chunks from document for better processing.
-        
-        Args:
-            doc: Processed document
-        
-        Returns:
-            List of text chunks
-        """
+    words = text.lower().split()[:100]  # Check first 100 words
+    if not words:
+        return "unknown"
+    
+    english_count = sum(1 for word in words if word in english_words)
+    english_ratio = english_count / len(words)
+    
+    return "en" if english_ratio > 0.3 else "unknown"
+
+
+def _extract_basic_metadata(text: str, url: str) -> Dict[str, Any]:
+    """Extract basic metadata from text content."""
+    metadata = {
+        "char_count": len(text),
+        "word_count": len(text.split()),
+        "paragraph_count": len([p for p in text.split('\n\n') if p.strip()]),
+        "language": _detect_content_language(text)
+    }
+    
+    # Check for academic/research indicators
+    academic_indicators = [
+        "abstract", "introduction", "methodology", "results", "conclusion",
+        "references", "doi:", "arxiv:", "journal", "university", "research"
+    ]
+    
+    text_lower = text.lower()
+    academic_score = sum(1 for indicator in academic_indicators if indicator in text_lower)
+    metadata["academic_score"] = academic_score
+    metadata["likely_academic"] = academic_score >= 3
+    
+    return metadata
+
+
+# Utility functions for content processing
+def filter_documents_by_quality(documents: List[Document], min_length: int = 500) -> List[Document]:
+    """Filter documents by content quality."""
+    filtered = []
+    
+    for doc in documents:
         text = doc["text"]
-        if not text:
-            return []
         
-        chunks = []
-        start = 0
-        chunk_id = 0
+        # Minimum length check
+        if len(text) < min_length:
+            continue
         
-        while start < len(text):
-            end = min(start + self.chunk_size, len(text))
-            
-            # Try to break at sentence or word boundary
-            if end < len(text):
-                # Look for sentence boundary
-                sentence_end = text.rfind('.', start, end)
-                if sentence_end > start + self.chunk_size // 2:
-                    end = sentence_end + 1
-                else:
-                    # Look for word boundary
-                    word_end = text.rfind(' ', start, end)
-                    if word_end > start + self.chunk_size // 2:
-                        end = word_end
-            
-            chunk_text = text[start:end].strip()
-            
-            if chunk_text:
-                chunk = {
-                    "chunk_id": f"{doc['url']}#{chunk_id}",
-                    "document_url": doc["url"],
-                    "document_title": doc["title"],
-                    "text": chunk_text,
-                    "text_length": len(chunk_text),
-                    "start_position": start,
-                    "end_position": end,
-                    "chunk_index": chunk_id
-                }
-                chunks.append(chunk)
-                chunk_id += 1
-            
-            # Move start position with overlap
-            start = max(start + 1, end - self.chunk_overlap)
-            
-            # Prevent infinite loop
-            if start >= end:
-                break
-        
-        return chunks
+        # Basic quality checks
+        if _passes_content_quality_check(text):
+            filtered.append(doc)
+    
+    return filtered
 
 
-# Global reader instance
-reader = Reader()
+def _passes_content_quality_check(text: str) -> bool:
+    """Check if content passes basic quality filters."""
+    if not text or len(text.strip()) < 50:
+        return False
+    
+    # Check for reasonable sentence structure
+    sentences = [s.strip() for s in text.split('.') if s.strip()]
+    if len(sentences) < 3:
+        return False
+    
+    # Check for excessive repetition (spam indicator)
+    words = text.lower().split()
+    if len(set(words)) < len(words) * 0.3:  # Less than 30% unique words
+        return False
+    
+    return True
 
 
-async def read(search_results: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Convenience function for content reading."""
-    return await reader.read(search_results)
+def group_chunks_by_document(chunks: List[Chunk]) -> Dict[str, List[Chunk]]:
+    """Group chunks by their source document URL."""
+    grouped = {}
+    
+    for chunk in chunks:
+        doc_url = chunk["doc_url"]
+        if doc_url not in grouped:
+            grouped[doc_url] = []
+        grouped[doc_url].append(chunk)
+    
+    return grouped

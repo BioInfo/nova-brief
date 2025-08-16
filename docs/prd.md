@@ -7,7 +7,7 @@ Build a fast, reliable deep-research agent that plans, searches, reads, verifies
 **Why this stack**
 
 * **Speed**: GPT-OSS-120B runs at \~3,000 tok/s on Cerebras Inference Cloud. Good for multi-step research loops. ([Cerebras][3], [Inside HPC & AI News][4])
-* **Simple integration**: OpenAI-compatible API; swap your client with `base_url=https://api.cerebras.ai/v1`. ([inference-docs.cerebras.ai][1])
+* **Simple integration**: OpenAI-compatible API; swap your client with `base_url=https://openrouter.ai/api/v1` and configure it to route exclusively to the Cerebras provider. ([inference-docs.cerebras.ai][1])
 * **Open ecosystem**: Compatible with open deep-research frameworks for faster iteration if needed. ([GitHub][5], [LangChain Blog][6], [FlowiseAI][7])
 
 ---
@@ -72,7 +72,7 @@ Build a fast, reliable deep-research agent that plans, searches, reads, verifies
 
 * Python 3.11, single file or small package.
 * **UI**: Streamlit (text box + “Run”).
-* **Model**: Cerebras via OpenAI client; `model="gpt-oss-120b"`.
+* **Model**: OpenRouter via OpenAI client; `model="openai/gpt-oss-120b"`, with API calls configured to use the Cerebras provider only.
 * **Tools**: `web_search` (DuckDuckGo or Tavily), `fetch_url` with `httpx` + `trafilatura`, `parse_pdf` with `pypdf`.
 * **Data**: in-memory; optional `.md` and `.json` export (report + citations).
 * **Validation**: simple claim coverage check.
@@ -80,7 +80,7 @@ Build a fast, reliable deep-research agent that plans, searches, reads, verifies
 **Deliverables**
 
 * Working app: topic → cited brief.
-* Config via `.env` (`CEREBRAS_API_KEY`).
+* Config via `.env` (`OPENROUTER_API_KEY`).
 * Basic logs: tool calls, pages fetched, tokens used.
 
 **Acceptance criteria**

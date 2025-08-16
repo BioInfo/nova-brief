@@ -15,9 +15,9 @@ References:
 ## 1) Environments and configuration
 
 Environment variables (.env)
-- CEREBRAS_API_KEY=... (required)
-- CEREBRAS_BASE_URL=https://api.cerebras.ai/v1 (default)
-- MODEL=gpt-oss-120b (default)
+- OPENROUTER_API_KEY=... (required)
+- OPENROUTER_BASE_URL=https://openrouter.ai/api/v1 (default)
+- MODEL="openai/gpt-oss-120b" (default)
 - SEARCH_PROVIDER=duckduckgo (or tavily/bing/brave)
 - MAX_ROUNDS=3
 - PER_DOMAIN_CAP=3
@@ -38,14 +38,14 @@ Config policy
 ## 2) Health checks
 
 Local (MVP)
-- Internal function: [`service.health()`](../../src/api/service.py:1) returns status of Cerebras reachability, search provider DNS resolve, and cache path (if enabled).
+- Internal function: [`service.health()`](../../src/api/service.py:1) returns status of OpenRouter API reachability, search provider DNS resolve, and cache path (if enabled).
 
 Stage 3 HTTP
 - GET /health:
   - status: ok | degraded | fail
-  - components: cerebras, search_provider, cache
+  - components: openrouter, search_provider, cache
 - Failure examples:
-  - cerebras:fail → API not reachable or 401/403 (invalid key)
+  - openrouter:fail → API not reachable or 401/403 (invalid key)
   - cache:degraded → SQLite locked or missing migrations
 
 ---
@@ -103,13 +103,14 @@ Logging
 
 ## 6) Incident response playbooks
 
-A) Cerebras provider outage
+A) LLM Provider Outage (OpenRouter/Cerebras)
 - Symptoms: 503 PROVIDER_UNAVAILABLE; auth 401/403
 - Checks:
-  - Verify CEREBRAS_API_KEY present/valid
-  - Test curl to CEREBRAS_BASE_URL
+  - Check OpenRouter status page for reported incidents
+  - Verify OPENROUTER_API_KEY present/valid
+  - Test curl to OPENROUTER_BASE_URL
 - Mitigation:
-  - Exponential backoff; temporary disable new runs (429)
+  - Exponential backoff; temporarily disable new runs (429)
   - Communicate status via status banner
 - Post-incident:
   - Record in [../../memory-bank/decisionLog.md](../../memory-bank/decisionLog.md)

@@ -1,86 +1,66 @@
 # Product Context
 
-This file provides a high-level overview of the project and the expected product that will be created. Initially it is based upon docs/prd.md and all other available project-related information in the working directory. This file is intended to be updated as the project evolves, and should be used to inform all other modes of the project's goals and context.
-2025-08-15 20:15:38 - Initialized from docs/prd.md (PRD: Deep Research Agent) via Initiate Memory Bank (command "i").
+This file provides a high-level overview of the project and the expected product that will be created. It is initialized from the current documentation in docs/ (including docs/prd.md and docs/master-plan.md). This file is intended to be updated as the project evolves, and should be used to inform all other modes of the project's goals and context.
+2025-08-16 15:36:55 - Initialized from docs/prd.md and docs/master-plan.md
 
 *
 
 ## Project Goal
 
-Build a fast, reliable deep-research agent that plans, searches, reads, verifies, and writes analyst-grade, cited briefs (800–1,200 words) using Cerebras GPT-OSS-120B through an OpenAI-compatible API. Deliver a Python MVP with a simple UI (Streamlit), then iterate through robustness, orchestration/APIs, and a polished web app with high throughput on Cerebras.
+Build a fast, reliable deep-research agent that plans, searches, reads, verifies, and writes analyst-grade, cited briefs (800–1,200 words). Ship a Python MVP with Streamlit, then scale to a robust, observable, and performant product. The system now uses OpenRouter’s OpenAI-compatible API, pinned to the Cerebras provider running model "openai/gpt-oss-120b", with a roadmap toward structured JSON outputs via JSON Schema.
 
 ## Key Features
 
 - End-to-end agent loop: Planner → Searcher → Reader → Analyst → Verifier → Writer
-- Tooling: web search, URL fetch and extract (HTML/PDF), dedupe, quality gate, citation validator
-- Strict citation policy: all non-obvious claims must be backed by at least one source
-- Output: Markdown brief with numbered citations and “References” section
-- Speed and cost visibility: token counts and spend per run; throughput optimized via Cerebras
-- Configurable constraints: date ranges, domain allow/deny lists, per-domain caps, timeouts
-- Caching and robustness: retries, backoff, circuit breakers; SQLite cache (Stage 2+)
-- Orchestration and observability (Stage 3+): LangGraph, structured traces, OpenTelemetry
-- Polished UX (Stage 4): Next.js UI, live traces, evidence map, inline citation previews, exports
+- Tooling: web search, URL fetch and extract (HTML/PDF), dedupe, quality gate, citation validation
+- Strict citation policy: all non-obvious claims must be backed by ≥1 source (target ≥2 for 60%+ by Stage 4)
+- Outputs: Markdown brief with numbered citations and References section; JSON export (Stage 2+)
+- Performance/Cost visibility: token counts, timings, source counts; guardrails and ceilings
+- Configurability: date ranges, domain allow/deny lists, per-domain caps, timeouts
+- Robustness: retries, backoff, circuit breakers; SQLite cache (Stage 2+)
+- Observability (Stage 3+): structured traces, OpenTelemetry export
+- Product polish (Stage 4): Next.js UI, evidence map, exports, admin/usage dashboards
 
 ## Overall Architecture
 
-- Runtime (MVP → Scale): Client UI → Backend service (/run) → Agent loop → Cerebras chat API (OpenAI-compatible) + search/fetch tools → SQLite cache → Storage (reports)
-- Model: gpt-oss-120b on Cerebras Inference Cloud (OpenAI-compatible endpoints)
-- Key components: 
-  - Planner: break topic into sub-questions; propose queries
-  - Searcher: call search API; return top-k results
-  - Reader: fetch and extract text; split to chunks
-  - Analyst: synthesize; track claim-to-source links
-  - Verifier: find unsupported claims; trigger follow-ups
-  - Writer: produce final Markdown with references
-- Data model (Stage 2+ with Pydantic v2): SearchResult, Document, Chunk, Claim, Citation, Report, TraceEvent, Config
+- Runtime (MVP → Scale): Client UI (Streamlit) → Backend service (/run) → Agent loop (Planner→Searcher→Reader→Analyst→Verifier→Writer) → OpenRouter API (/chat/completions) + search/fetch tools → SQLite cache (Stage 2+) → Storage (reports)
+- Model provider: OpenAI-compatible client pointing at OpenRouter
+  - base_url: https://openrouter.ai/api/v1
+  - api_key: OPENROUTER_API_KEY
+  - model: "openai/gpt-oss-120b"
+  - routing: providers=["cerebras"] to pin to Cerebras
+- Data model progression: Stage 1 typed dicts → Stage 2 Pydantic v2 models + typed JSON export
+- Structured output: Writer to supply JSON Schema (derived from Pydantic Report) to enforce valid JSON via OpenRouter’s structured output/tool-calling
+- API (Stage 3): /run, /runs/:id; health and metrics endpoints; key-based auth
+- Performance strategy: parallel search/fetch, caching, streaming writer, early-write behavior
+- Operations: env-configured caps, concurrency/backpressure, health checks, incident playbooks
 
-## Users and Jobs-to-be-Done
+## Staged Delivery (Milestones)
 
-- Analysts / PMs: fast first-pass research with credible sources
-- Engineers / Scientists: technical overviews with links to primary papers
-- Executives: single-screen brief with risks, numbers, sources
+- Stage 1 (Weeks 1–2): MVP with OpenRouter client pinned to Cerebras; web_search/fetch_url/parse_pdf; agent loop v1; Streamlit UI; basic claim coverage; logs
+- Stage 2 (Weeks 3–4): Async httpx with per-domain rate limits; dedupe; quality gate; SQLite cache; Pydantic v2 schemas; evaluation harness with 10 topics
+- Stage 3 (Weeks 5–6): Orchestration with LangGraph; workspaces; /run API with key auth; observability with traces/OTEL; attachments
+- Stage 4 (Weeks 7–8): Next.js app; evidence map; further performance passes; safety (robots.txt, caps); admin + usage dashboard
 
-## Functional and Non-Functional Requirements (Summary)
+## Configuration (MVP defaults)
 
-- Input: topic + optional constraints
-- Output: cited Markdown brief + references, plus JSON exports (later)
-- Tool-calling: web_search, fetch_url, parse_pdf
-- Verification: reject non-obvious claims lacking sources
-- Limits: max search rounds, per-domain caps, request timeouts
-- Latency: MVP ≤6 min; Stage 4 target 60–90 sec
-- Reliability: deterministic retries/backoff; robust fetch pipeline
-- Cost: show token usage and spend per run; guardrails/ceilings
-
-## Staged Delivery Plan (Milestones)
-
-- Stage 1 (MVP): Python 3.11 + Streamlit, Cerebras via OpenAI client, basic tools (httpx, trafilatura, pypdf), in-memory data, simple claim coverage, logs; acceptance: ≥5 reputable sources, 0 orphan claims, <6 min E2E
-- Stage 2 (Robustness): async httpx, dedupe (URL normalization + SimHash/MinHash), quality gates, SQLite caching, Pydantic v2 schemas, eval harness; acceptance: dead-link <5%, dupes <10%, visible cache improvements
-- Stage 3 (Scale & Control): LangGraph, project workspaces, source controls (date/academic-only/caps), observability (JSON traces, OTEL), attachments, team mode (/run API with key auth); acceptance: repeatability, 5 concurrent runs, API docs
-- Stage 4 (Product Polish): Next.js app with live trace/evidence map/export, speed optimizations (parallel search/fetch, aggressive caching, 3,000 tok/s streaming), safety (robots.txt, request caps), integrations (Tavily/Bing/Brave), admin & usage dashboard; acceptance: UX <2 min to run/export, ≥90% claim coverage (≥1 source), ≥60% (≥2 sources)
-
-## APIs (Planned)
-
-- POST /run: input {topic, constraints?, config?}; returns {report_md, report_json, metrics}
-- GET /runs/:id: returns prior result + trace
-
-## Evaluation
-
-- Harness of 10 fixed topics with metrics: time, tokens, sources, diversity, dead-links, claim coverage, duplication
-- Optional comparisons with open deep-research frameworks
-
-## Security & Compliance
-
-- Respect robots.txt and site terms; avoid storing raw pages unless cached; store extracted text + URL + hash
-- Secrets hygiene; PII avoidance; encrypted storage for uploads; redact sensitive URL params in logs
+- OPENROUTER_API_KEY
+- OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+- MODEL="openai/gpt-oss-120b"
+- SEARCH_PROVIDER=duckduckgo
+- MAX_ROUNDS=3
+- PER_DOMAIN_CAP=3
+- FETCH_TIMEOUT_S=15
+- ENABLE_CACHE=false (MVP), true in Stage 2+
 
 ## Risks & Mitigations (Highlights)
 
-- Paywalls/anti-bot → public alternates, user PDFs
+- Paywalls/anti-bot → summaries, public alternates, user PDFs
 - Source spam → quality scores + allow/deny lists
-- Hallucinated citations → URL resolution checks; quote-match spot checks
-- Provider changes → abstraction for search; health checks
-- Cost overruns → ceilings; pre-run cost estimates
+- Hallucinated citations → URL resolution checks; spot-check quotes
+- Provider issues → health checks; incident playbooks (OpenRouter/Cerebras); retry/backoff; queue caps
+- Cost overruns → ceilings; pre-run estimates
 
 ---
 
-(Notes) Pydantic v2 is optional for MVP; becomes valuable for Stage 2+ for schemas, validation, and stable JSON exports.
+2025-08-16 15:36:55 - Initialized Product Context from docs/prd.md and docs/master-plan.md with OpenRouter + Cerebras provider pinning, model "openai/gpt-oss-120b", and structured JSON output plan.

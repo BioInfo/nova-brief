@@ -141,8 +141,8 @@ Version field:
   - max_rounds: number (1..10)
   - per_domain_cap: number (1..10)
   - timeouts: { fetch_timeout_s: number (5..60) }
-  - model: string ("gpt-oss-120b" default)
-  - cerebras_base_url: string
+  - model: string ("openai/gpt-oss-120b" default)
+  - openrouter_base_url: string
   - enable_cache: boolean
 - Example:
 {
@@ -151,8 +151,8 @@ Version field:
   "max_rounds": 3,
   "per_domain_cap": 3,
   "timeouts": { "fetch_timeout_s": 15 },
-  "model": "gpt-oss-120b",
-  "cerebras_base_url": "https://api.cerebras.ai/v1",
+  "model": "openai/gpt-oss-120b",
+  "openrouter_base_url": "https://openrouter.ai/api/v1",
   "enable_cache": false
 }
 
@@ -193,6 +193,13 @@ Validation (Stage 2, Pydantic v2):
 - String lengths, enums, numeric ranges enforced
 - Custom validators for URL normalization and domain extraction
 
+3.5) Structured Output Generation
+- The Writer component will leverage the Pydantic models defined in Stage 2 to generate a JSON Schema. This schema will be passed to the OpenRouter API to request a response that strictly conforms to the Report data model. This moves from a "prompt engineering" approach for JSON to a more reliable, "schema-driven" approach.
+
+Example Writer logic:
+- Get Pydantic model Report.
+- Generate schema: Report.model_json_schema().
+- Pass schema to the chat() call using the response_format parameter with type: "json_object" and the relevant tool-calling structure for JSON Schema enforcement.
 ---
 
 ## 4) Relationships and invariants

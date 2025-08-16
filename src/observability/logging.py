@@ -1,75 +1,9 @@
-"""
-Logging configuration and utilities for the research agent.
-Provides structured logging with request IDs and sensitive data redaction.
-"""
+"""Logging configuration and utilities for Nova Brief."""
 
 import logging
 import os
 import sys
-from typing import Dict, Any, Optional
-from dotenv import load_dotenv
-
-load_dotenv()
-
-
-class StructuredFormatter(logging.Formatter):
-    """Custom formatter for structured JSON-like logging."""
-    
-    def format(self, record):
-        # Create structured log entry
-        log_entry = {
-            "timestamp": self.formatTime(record),
-            "level": record.levelname,
-            "logger": record.name,
-            "message": record.getMessage(),
-            "module": record.module,
-            "function": record.funcName,
-            "line": record.lineno
-        }
-        
-        # Add exception info if present
-        if record.exc_info:
-            log_entry["exception"] = self.formatException(record.exc_info)
-        
-        # Add extra fields from record
-        for key, value in record.__dict__.items():
-            if key not in ['name', 'msg', 'args', 'levelname', 'levelno', 'pathname', 
-                          'filename', 'module', 'lineno', 'funcName', 'created', 
-                          'msecs', 'relativeCreated', 'thread', 'threadName', 
-                          'processName', 'process', 'message', 'exc_info', 'exc_text',
-                          'stack_info']:
-                log_entry[key] = value
-        
-        return str(log_entry)
-
-
-def configure_logging():
-    """Configure application-wide logging settings."""
-    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
-    
-    # Create root logger
-    root_logger = logging.getLogger()
-    root_logger.setLevel(getattr(logging, log_level))
-    
-    # Remove existing handlers
-    for handler in root_logger.handlers[:]:
-        root_logger.removeHandler(handler)
-    
-    # Create console handler
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(getattr(logging, log_level))
-    
-    # Set formatter
-    formatter = StructuredFormatter()
-    console_handler.setFormatter(formatter)
-    
-    # Add handler to root logger
-    root_logger.addHandler(console_handler)
-    
-    # Suppress noisy third-party loggers
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
-    logging.getLogger("urllib3").setLevel(logging.WARNING)
+from typing import Any, Dict, Optional
 
 
 def get_logger(name: str) -> logging.Logger:
@@ -82,7 +16,32 @@ def get_logger(name: str) -> logging.Logger:
     Returns:
         Configured logger instance
     """
-    return logging.getLogger(name)
+    logger = logging.getLogger(name)
+    
+    if not logger.handlers:
+        _configure_logger(logger)
+    
+    return logger
+
+
+def _configure_logger(logger: logging.Logger) -> None:
+    """Configure logger with appropriate handlers and formatting."""
+    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+    logger.setLevel(getattr(logging, log_level, logging.INFO))
+    
+    # Console handler
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(logger.level)
+    
+    # Structured format
+    formatter = logging.Formatter(
+        "%(asctime)s | %(name)s | %(levelname)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    handler.setFormatter(formatter)
+    
+    logger.addHandler(handler)
+    logger.propagate = False
 
 
 def redact_sensitive_data(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -90,27 +49,52 @@ def redact_sensitive_data(data: Dict[str, Any]) -> Dict[str, Any]:
     Redact sensitive information from log data.
     
     Args:
-        data: Dictionary that may contain sensitive data
+        data: Dictionary that may contain sensitive information
     
     Returns:
-        Dictionary with sensitive fields redacted
+        Dictionary with sensitive data redacted
     """
     sensitive_keys = {
-        "api_key", "token", "password", "secret", "auth", "authorization",
-        "x-api-key", "x-auth-token"
+        "api_key", "openrouter_api_key", "password", "token", 
+        "secret", "key", "auth", "authorization"
     }
     
-    redacted_data = {}
+    redacted = {}
     for key, value in data.items():
-        if key.lower() in sensitive_keys:
-            redacted_data[key] = "[REDACTED]"
+        if any(sensitive in key.lower() for sensitive in sensitive_keys):
+            redacted[key] = "***REDACTED***"
         elif isinstance(value, dict):
-            redacted_data[key] = redact_sensitive_data(value)
+            redacted[key] = redact_sensitive_data(value)
         else:
-            redacted_data[key] = value
+            redacted[key] = value
     
-    return redacted_data
+    return redacted
 
 
-# Configure logging on module import
-configure_logging()
+def log_function_call(
+    logger: logging.Logger,
+    function_name: str,
+    args: Optional[Dict[str, Any]] = None,
+    duration_ms: Optional[float] = None
+) -> None:
+    """
+    Log a function call with structured data.
+    
+    Args:
+        logger: Logger instance
+        function_name: Name of the function being called
+        args: Function arguments (will be redacted for sensitive data)
+        duration_ms: Duration of the function call in milliseconds
+    """
+    log_data: Dict[str, Any] = {
+        "event": "function_call",
+        "function": function_name,
+    }
+    
+    if args:
+        log_data["args"] = redact_sensitive_data(args)
+    
+    if duration_ms is not None:
+        log_data["duration_ms"] = duration_ms
+    
+    logger.info(f"Function call: {function_name}", extra=log_data)

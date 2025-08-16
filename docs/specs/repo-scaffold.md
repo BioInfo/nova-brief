@@ -51,7 +51,7 @@ Top-level layout for MVP through Stage 3 (folders may be created incrementally):
     - fetch_url.py
     - parse_pdf.py
   - providers/
-    - cerebras_client.py
+    - openrouter_client.py
     - search_providers.py
   - storage/
     - cache.py
@@ -92,7 +92,7 @@ MVP-core:
   - [src/tools/fetch_url.py](../../src/tools/fetch_url.py) — [`fetch_url.run()`](../../src/tools/fetch_url.py:1)
   - [src/tools/parse_pdf.py](../../src/tools/parse_pdf.py) — [`parse_pdf.run()`](../../src/tools/parse_pdf.py:1)
 - Providers (clients/abstractions):
-  - [src/providers/cerebras_client.py](../../src/providers/cerebras_client.py) — [`cerebras_client.chat()`](../../src/providers/cerebras_client.py:1)
+  - [src/providers/openrouter_client.py](../../src/providers/openrouter_client.py) — [`openrouter_client.chat()`](../../src/providers/openrouter_client.py:1)
   - [src/providers/search_providers.py](../../src/providers/search_providers.py) — [`search_providers.duckduckgo()`](../../src/providers/search_providers.py:1)
 - Storage and models:
   - [src/storage/models.py](../../src/storage/models.py) — Pydantic v2 models in Stage 2; MVP typed dicts
@@ -129,16 +129,27 @@ Artifacts:
 - (Stage 3+) opentelemetry-api opentelemetry-sdk (optional)
 
 3.2 .env.example
-- CEREBRAS_API_KEY=
-- CEREBRAS_BASE_URL=https://api.cerebras.ai/v1
-- MODEL=gpt-oss-120b
-- SEARCH_PROVIDER=duckduckgo
-- MAX_ROUNDS=3
-- PER_DOMAIN_CAP=3
-- FETCH_TIMEOUT_S=15
-- ENABLE_CACHE=false
-- LOG_LEVEL=INFO
-- USER_AGENT=NovaBrief-Research/0.1
+```Env
+# OpenRouter Configuration for Cerebras
+OPENROUTER_API_KEY=
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+MODEL="openai/gpt-oss-120b" # The specific model string for OpenRouter
+
+# Search Provider
+SEARCH_PROVIDER=duckduckgo
+
+# Agent Caps & Timeouts
+MAX_ROUNDS=3
+PER_DOMAIN_CAP=3
+FETCH_TIMEOUT_S=15
+
+# Feature Flags
+ENABLE_CACHE=false
+
+# System
+LOG_LEVEL=INFO
+USER_AGENT=NovaBrief-Research/0.1
+```
 
 3.3 README.md (outline)
 - Overview and goals (link PRD)
@@ -179,7 +190,7 @@ MVP stubs to create during coding kickoff:
 - [src/tools/web_search.py](../../src/tools/web_search.py), [`web_search.run()`](../../src/tools/web_search.py:1)
 - [src/tools/fetch_url.py](../../src/tools/fetch_url.py), [`fetch_url.run()`](../../src/tools/fetch_url.py:1)
 - [src/tools/parse_pdf.py](../../src/tools/parse_pdf.py), [`parse_pdf.run()`](../../src/tools/parse_pdf.py:1)
-- [src/providers/cerebras_client.py](../../src/providers/cerebras_client.py), [`cerebras_client.chat()`](../../src/providers/cerebras_client.py:1)
+- [src/providers/openrouter_client.py](../../src/providers/openrouter_client.py), [`openrouter_client.chat()`](../../src/providers/openrouter_client.py:1)
 - [src/providers/search_providers.py](../../src/providers/search_providers.py), [`search_providers.duckduckgo()`](../../src/providers/search_providers.py:1)
 - [src/observability/logging.py](../../src/observability/logging.py), [`logging.get_logger()`](../../src/observability/logging.py:1)
 - [src/observability/tracing.py](../../src/observability/tracing.py), [`tracing.emit_event()`](../../src/observability/tracing.py:1)
@@ -201,7 +212,7 @@ MVP stubs to create during coding kickoff:
 ## 7) Implementation order for MVP
 
 1) Providers:
-   - [`cerebras_client.chat()`](../../src/providers/cerebras_client.py:1)
+   - [`openrouter_client.chat()`](../../src/providers/openrouter_client.py:1)
    - [`search_providers.duckduckgo()`](../../src/providers/search_providers.py:1)
 2) Tools:
    - [`web_search.run()`](../../src/tools/web_search.py:1)
@@ -224,7 +235,7 @@ MVP stubs to create during coding kickoff:
 ## 8) Coding kickoff checklist
 
 - [ ] Create requirements.txt and install
-- [ ] Create .env.example; set CEREBRAS_API_KEY locally
+- [ ] Create .env.example; set OPENROUTER_API_KEY locally
 - [ ] Implement providers and tools with simple tests
 - [ ] Implement agent functions with minimal logic per [./module-specs.md](./module-specs.md)
 - [ ] Wire Streamlit UI and produce first report_md

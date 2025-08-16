@@ -17,7 +17,7 @@ References:
 
 ## 1) Executive summary
 
-Build a fast, reliable deep-research agent that plans, searches, reads, verifies, and writes cited briefs. Ship an MVP in Python with Streamlit, using Cerebras GPT-OSS-120B through OpenAI-compatible APIs. Scale through robustness, orchestration, and a polished web app, optimizing for throughput, reliability, observability, and cost.
+Build a fast, reliable deep-research agent that plans, searches, reads, verifies, and writes cited briefs. Ship an MVP in Python with Streamlit, using Cerebras GPT-OSS-120B through OpenRouter's OpenAI-compatible API, pinned exclusively to the Cerebras provider. Scale through robustness, orchestration, and a polished web app, optimizing for throughput, reliability, observability, and cost.
 
 ---
 
@@ -41,8 +41,8 @@ Traceability matrix (high-level):
 ## 3) System architecture
 
 Runtime path (MVP → Scale):
-- Client UI (Streamlit) → Backend service (/run) → Agent loop (Planner → Searcher → Reader → Analyst → Verifier → Writer) → Cerebras chat API (OpenAI-compatible) + search/fetch tools → SQLite cache (Stage 2+) → Storage (reports)
-- Model: gpt-oss-120b via Cerebras Inference Cloud (OpenAI-compatible). Configure client with base_url and API key.
+- Client UI (Streamlit) → Backend service (/run) → Agent loop (Planner → Searcher → Reader → Analyst → Verifier → Writer) → OpenRouter API (/chat/completions) + search/fetch tools → SQLite cache (Stage 2+) → Storage (reports)
+- Model: openai/gpt-oss-120b via OpenRouter. Configure client with base_url="https://openrouter.ai/api/v1" and OPENROUTER_API_KEY. The client must enforce Cerebras-only routing.
 
 Key architectural tenets:
 - Deterministic orchestration with explicit tool-call boundaries.
@@ -79,6 +79,7 @@ Note: No code here to keep this document language-agnostic.
 - Writer
   - Input: verified outline/sections/citations
   - Output: final Markdown brief + References list; optional JSON report
+  - Rules: Leverage OpenRouter's support for structured output by providing a JSON Schema for the final Report object. This ensures validated, machine-readable output.
 
 Cross-cutting:
 - Dedupe: URL normalization, text SimHash/MinHash (Stage 2)
@@ -119,7 +120,11 @@ Notes:
 
 Provider abstraction:
 - Search providers: DuckDuckGo (default for MVP) → Tavily/Bing/Brave plugs later
-- Model provider: OpenAI-compatible pointing at Cerebras; expose model, base_url, api_key
+- Model provider: OpenAI-compatible client pointing at OpenRouter.
+  - base_url: https://openrouter.ai/api/v1
+  - api_key: OPENROUTER_API_KEY
+  - model: "openai/gpt-oss-120b"
+  - Routing: All requests must include parameters to pin the provider to Cerebras (e.g., {"providers": ["cerebras"]} in the request body).
 
 ---
 
@@ -263,9 +268,9 @@ Acceptance criteria:
 ## 17) Configuration and environments
 
 - Environment variables (.env):
-  - CEREBRAS_API_KEY
-  - CEREBRAS_BASE_URL=https://api.cerebras.ai/v1
-  - MODEL=gpt-oss-120b
+  - OPENROUTER_API_KEY
+  - OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+  - MODEL="openai/gpt-oss-120b"
   - SEARCH_PROVIDER=duckduckgo (default)
   - MAX_ROUNDS=3
   - PER_DOMAIN_CAP=3
@@ -291,7 +296,7 @@ Acceptance criteria:
 ## 19) Delivery plan and milestones
 
 Weeks 1–2 (Stage 1 — MVP)
-- Wire Cerebras client (OpenAI-compatible config)
+- Wire OpenRouter client (OpenAI-compatible) and configure for Cerebras-only routing.
 - Implement tools: web_search, fetch_url, parse_pdf
 - Implement agent loop v1 (sync I/O)
 - Streamlit UI (topic input, status log, Markdown output, download .md)
@@ -328,7 +333,7 @@ Deliverable: “fastest deep research” UX and coverage targets
 ## 20) Initial backlog (prioritized)
 
 Must (MVP)
-- Cerebras client setup and config
+- OpenRouter client setup and config (API key, base URL, model, provider pinning).
 - web_search with DuckDuckGo (or Tavily if available)
 - fetch_url + HTML main content extraction; parse_pdf
 - Agent loop v1 with claim coverage enforcement

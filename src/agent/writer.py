@@ -1,378 +1,483 @@
-"""
-Writer agent module for generating final research reports with citations.
-Produces structured Markdown output with numbered references and proper formatting.
-"""
+"""Writer component for generating final research reports with citations."""
 
-import re
-from typing import List, Dict, Any, Optional, Tuple
-from ..providers.cerebras_client import chat
+import json
+from typing import Dict, List, Any, Optional
+from datetime import datetime
+from ..providers.openrouter_client import chat, create_json_schema_format
+from ..storage.models import Claim, Citation, Reference, Report
 from ..observability.logging import get_logger
-from ..observability.tracing import start_span, end_span
+from ..observability.tracing import TimedOperation, emit_event
 
 logger = get_logger(__name__)
 
 
-class Writer:
-    """Writing agent that generates final research reports with citations."""
+WRITING_SYSTEM_PROMPT = """You are an expert research writer who creates comprehensive, well-structured reports. Your task is to:
+
+1. Transform research claims into a coherent, analytical narrative
+2. Organize content into logical sections with clear flow
+3. Include proper in-text citations using numbered format [1], [2], etc.
+4. Write in an authoritative, analytical tone suitable for professional briefings
+5. Ensure coverage of all major findings while maintaining readability
+6. Target 800-1200 words for comprehensive coverage
+
+Guidelines:
+- Start with a concise introduction that establishes context
+- Organize findings into themed sections based on the research
+- Use numbered citations [1] immediately after claims requiring sources
+- Include quantitative data and specific examples where available
+- Address multiple perspectives when relevant
+- Conclude with key implications and future considerations
+- Maintain objective, professional tone throughout
+
+Structure the response as a complete markdown report."""
+
+
+async def write(
+    claims: List[Claim],
+    citations: List[Citation],
+    draft_sections: List[str],
+    topic: str,
+    sub_questions: List[str],
+    coverage_report: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    Generate final research report with citations and references.
     
-    def __init__(self):
-        self.target_word_count = 1000  # Target 800-1200 words
-        self.writing_prompt = """You are a professional research writer. Create a comprehensive, well-structured research brief based on the provided analysis.
-
-Requirements:
-- 800-1200 words in professional, analytical tone
-- Clear structure with meaningful headings
-- Every significant claim must cite sources using [1], [2], etc.
-- Include brief introduction and conclusion
-- Use markdown formatting
-- Focus on key insights and findings
-- Maintain objectivity and analytical perspective
-
-Structure your brief as:
-1. Executive Summary (2-3 sentences)
-2. Key Findings (main insights with citations)
-3. Detailed Analysis (supporting evidence and context)
-4. Implications and Considerations
-5. Conclusion
-
-Research Topic: {topic}
-
-Verified Claims with Sources:
-{claims_data}
-
-Additional Context:
-{context_data}
-
-Write a comprehensive research brief with proper citations. Use numbered citations [1], [2], etc. that correspond to the source list that will be appended."""
+    Args:
+        claims: Verified claims to include in report
+        citations: Citation information for sources
+        draft_sections: Suggested section structure
+        topic: Main research topic
+        sub_questions: Research questions addressed
+        coverage_report: Verification coverage metrics
     
-    async def write(self, verification_result: Dict[str, Any], 
-                   analysis_result: Dict[str, Any], 
-                   documents: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Generate final research report with citations.
-        
-        Args:
-            verification_result: Output from verifier module
-            analysis_result: Output from analyst module  
-            documents: Source documents from reader
-        
-        Returns:
-            Dict containing formatted report and metadata
-        """
-        span_id = start_span("write", "agent", {
-            "topic": verification_result.get("research_topic", "")
-        })
-        
+    Returns:
+        Dictionary with success status, report, and metadata
+    """
+    with TimedOperation("agent_writer") as timer:
         try:
-            topic = verification_result.get("research_topic", "Unknown Topic")
+            if not claims:
+                return {
+                    "success": False,
+                    "error": "No claims provided for report generation",
+                    "report_md": "",
+                    "references": []
+                }
             
-            logger.info(f"Writing research brief for topic: {topic}")
+            logger.info(f"Writing report for '{topic}' with {len(claims)} claims")
             
-            # Prepare content for writing
-            verified_claims = verification_result.get("verified_claims", [])
-            all_claims = analysis_result.get("claims", [])
-            findings = analysis_result.get("main_findings", [])
+            # Organize claims by type and confidence
+            organized_claims = _organize_claims_for_writing(claims)
             
-            # Create source mapping and reference list
-            source_mapping, reference_list = self._create_source_mapping(all_claims, documents)
+            # Create citation mapping and assign numbers
+            citation_map, references = _create_citation_mapping(citations)
             
-            # Generate main content using LLM
-            main_content = await self._generate_content(
-                topic, verified_claims, findings, source_mapping
+            # Generate report content using LLM
+            report_content = await _generate_report_content(
+                topic,
+                sub_questions,
+                organized_claims,
+                citation_map,
+                draft_sections
             )
             
-            # Format final report
-            formatted_report = self._format_final_report(
-                topic, main_content, reference_list, verification_result, analysis_result
-            )
+            if not report_content["success"]:
+                logger.error(f"Report generation failed: {report_content.get('error')}")
+                return {
+                    "success": False,
+                    "error": f"Content generation failed: {report_content.get('error')}",
+                    "report_md": "",
+                    "references": []
+                }
             
-            # Calculate metrics
-            word_count = len(formatted_report.split())
-            citation_count = len(re.findall(r'\[\d+\]', formatted_report))
+            # Extract and format the report
+            report_md = report_content["report_markdown"]
             
-            result = {
-                "research_topic": topic,
-                "report_markdown": formatted_report,
-                "reference_list": reference_list,
-                "source_mapping": source_mapping,
-                "metrics": {
-                    "word_count": word_count,
-                    "citation_count": citation_count,
-                    "reference_count": len(reference_list),
-                    "claims_cited": len([c for c in all_claims if c.get("supporting_sources")]),
-                    "total_claims": len(all_claims),
-                    "coverage_score": verification_result.get("verification_metrics", {}).get("coverage_score", 0)
-                },
-                "generation_metadata": {
-                    "verified_claims": len(verified_claims),
-                    "total_findings": len(findings),
-                    "source_documents": len(documents)
-                },
-                "success": True
-            }
+            # Add references section
+            report_md = _add_references_section(report_md, references)
             
-            logger.info(f"Research brief completed: {word_count} words, {citation_count} citations, {len(reference_list)} references")
-            end_span(span_id, success=True, additional_data={
+            # Validate and clean up formatting
+            report_md = _clean_report_formatting(report_md)
+            
+            # Calculate report metrics
+            word_count = len(report_md.split())
+            citation_count = len(references)
+            
+            # Create structured report object
+            report_metadata = {
+                "topic": topic,
                 "word_count": word_count,
-                "citation_count": citation_count
-            })
-            
-            return result
-            
-        except Exception as e:
-            error_msg = f"Writing failed for topic '{topic}': {e}"
-            logger.error(error_msg)
-            end_span(span_id, success=False, error=error_msg)
-            return {
-                "research_topic": verification_result.get("research_topic", ""),
-                "report_markdown": "",
-                "reference_list": [],
-                "source_mapping": {},
-                "metrics": {
-                    "word_count": 0,
-                    "citation_count": 0,
-                    "reference_count": 0,
-                    "claims_cited": 0,
-                    "total_claims": 0,
-                    "coverage_score": 0
-                },
-                "generation_metadata": {},
-                "success": False,
-                "error": str(e)
-            }
-    
-    def _create_source_mapping(self, claims: List[Dict[str, Any]], 
-                              documents: List[Dict[str, Any]]) -> Tuple[Dict[str, int], List[Dict[str, Any]]]:
-        """
-        Create mapping from source chunks to citation numbers and reference list.
-        
-        Args:
-            claims: List of claims with source references
-            documents: List of source documents
-        
-        Returns:
-            Tuple of (source_mapping, reference_list)
-        """
-        # Extract all source chunk IDs from claims
-        all_source_ids = set()
-        for claim in claims:
-            for source_id in claim.get("supporting_sources", []):
-                all_source_ids.add(source_id)
-        
-        # Create document URL to info mapping
-        doc_map = {doc["url"]: doc for doc in documents}
-        
-        # Build reference list and mapping
-        reference_list = []
-        source_mapping = {}
-        ref_number = 1
-        
-        for source_id in sorted(all_source_ids):
-            # Extract URL from chunk ID (format: url#chunk_number)
-            if '#' in source_id:
-                url = source_id.split('#')[0]
-            else:
-                url = source_id
-            
-            # Skip if we already have this URL
-            if url in [ref.get("url") for ref in reference_list]:
-                # Find existing reference number
-                for i, ref in enumerate(reference_list):
-                    if ref.get("url") == url:
-                        source_mapping[source_id] = i + 1
-                        break
-                continue
-            
-            # Get document info
-            doc_info = doc_map.get(url, {})
-            
-            reference = {
-                "number": ref_number,
-                "title": doc_info.get("title", "Unknown Title"),
-                "url": url,
-                "domain": doc_info.get("domain", ""),
-                "access_date": "2024"  # Could be made dynamic
+                "citation_count": citation_count,
+                "claims_included": len(claims),
+                "sections": _extract_section_headers(report_md),
+                "created_at": datetime.now().isoformat(),
+                "coverage_metrics": coverage_report or {},
+                "sub_questions_addressed": len(sub_questions)
             }
             
-            reference_list.append(reference)
-            source_mapping[source_id] = ref_number
+            report: Report = {
+                "topic": topic,
+                "report_md": report_md,
+                "references": references,
+                "metadata": report_metadata,
+                "sections": _extract_section_headers(report_md),
+                "word_count": word_count,
+                "created_at": datetime.now().isoformat()
+            }
             
-            # Map all chunk IDs from this URL to same reference number
-            for other_source_id in all_source_ids:
-                if other_source_id.startswith(url):
-                    source_mapping[other_source_id] = ref_number
-            
-            ref_number += 1
-        
-        return source_mapping, reference_list
-    
-    async def _generate_content(self, topic: str, verified_claims: List[Dict[str, Any]], 
-                               findings: List[str], source_mapping: Dict[str, int]) -> str:
-        """
-        Generate main content using LLM.
-        
-        Args:
-            topic: Research topic
-            verified_claims: List of verified claims
-            findings: List of key findings
-            source_mapping: Mapping from sources to citation numbers
-        
-        Returns:
-            Generated content text
-        """
-        try:
-            # Prepare claims data with citation numbers
-            claims_data = ""
-            for i, claim in enumerate(verified_claims):
-                claim_text = claim.get("claim", "")
-                sources = claim.get("supporting_sources", [])
-                
-                # Map sources to citation numbers
-                citations = []
-                for source in sources:
-                    if source in source_mapping:
-                        citations.append(f"[{source_mapping[source]}]")
-                
-                claims_data += f"\n{i+1}. {claim_text}"
-                if citations:
-                    claims_data += f" {' '.join(citations)}"
-                claims_data += "\n"
-            
-            # Prepare context data
-            context_data = "\n".join([f"- {finding}" for finding in findings[:10]])
-            
-            # Create writing prompt
-            prompt = self.writing_prompt.format(
-                topic=topic,
-                claims_data=claims_data,
-                context_data=context_data
+            logger.info(
+                f"Report completed: {word_count} words, {citation_count} references",
+                extra=report_metadata
             )
             
-            # Generate content
-            messages = [
-                {"role": "system", "content": "You are a professional research writer creating analytical briefs."},
-                {"role": "user", "content": prompt}
-            ]
+            emit_event(
+                "report_generated",
+                metadata=report_metadata
+            )
             
-            response = chat(messages, temperature=0.3, max_tokens=2500)
-            return response["content"]
-        
+            return {
+                "success": True,
+                "report": report,
+                "report_md": report_md,
+                "references": references,
+                "metadata": report_metadata
+            }
+            
         except Exception as e:
-            logger.error(f"Content generation failed: {e}")
-            return self._fallback_content(topic, verified_claims, findings)
+            logger.error(f"Report writing failed: {e}")
+            emit_event(
+                "writing_error",
+                metadata={
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                    "claims_count": len(claims) if claims else 0
+                }
+            )
+            
+            return {
+                "success": False,
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "report_md": "",
+                "references": []
+            }
+
+
+async def _generate_report_content(
+    topic: str,
+    sub_questions: List[str],
+    organized_claims: Dict[str, List[Claim]],
+    citation_map: Dict[str, int],
+    draft_sections: List[str]
+) -> Dict[str, Any]:
+    """Generate report content using LLM with structured output."""
     
-    def _fallback_content(self, topic: str, claims: List[Dict[str, Any]], findings: List[str]) -> str:
-        """
-        Generate fallback content when LLM generation fails.
+    try:
+        # Prepare content for LLM
+        content_summary = _prepare_content_summary(organized_claims, citation_map)
         
-        Args:
-            topic: Research topic
-            claims: List of claims
-            findings: List of findings
+        # Create user prompt
+        user_prompt = f"""Research Topic: {topic}
+
+Research Questions Addressed:
+{chr(10).join(f"- {q}" for q in sub_questions)}
+
+Suggested Section Structure:
+{chr(10).join(f"- {s}" for s in draft_sections)}
+
+Research Findings and Claims:
+{content_summary}
+
+Citation Format: Use [1], [2], etc. for in-text citations matching the claim sources.
+
+Generate a comprehensive research report in markdown format. Include:
+1. Introduction establishing context
+2. Main findings organized by themes
+3. Proper numbered citations [1], [2], etc.
+4. Conclusion with implications
+Target: 800-1200 words."""
+
+        # Define JSON schema for structured report output
+        json_schema = {
+            "type": "object",
+            "properties": {
+                "report_markdown": {
+                    "type": "string",
+                    "description": "Complete markdown report with numbered citations"
+                },
+                "key_findings": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of key findings from the research"
+                },
+                "executive_summary": {
+                    "type": "string",
+                    "description": "Brief executive summary (2-3 sentences)"
+                }
+            },
+            "required": ["report_markdown", "key_findings", "executive_summary"],
+            "additionalProperties": False
+        }
         
-        Returns:
-            Basic structured content
-        """
-        content = f"# Research Brief: {topic}\n\n"
-        content += "## Executive Summary\n\n"
-        content += f"This brief examines {topic} based on available research and sources.\n\n"
+        # Call LLM for report generation
+        messages = [
+            {"role": "system", "content": WRITING_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt}
+        ]
         
-        content += "## Key Findings\n\n"
-        for i, finding in enumerate(findings[:5], 1):
-            content += f"{i}. {finding}\n"
+        response = await chat(
+            messages=messages,
+            temperature=0.2,
+            max_tokens=3000,
+            response_format=create_json_schema_format(json_schema)
+        )
         
-        content += "\n## Analysis\n\n"
-        content += f"Research on {topic} reveals several important aspects:\n\n"
+        if not response["success"]:
+            return {
+                "success": False,
+                "error": f"LLM call failed: {response.get('error')}",
+                "report_markdown": ""
+            }
         
-        for claim in claims[:3]:
-            claim_text = claim.get("claim", "")
-            if claim_text:
-                content += f"- {claim_text}\n"
+        # Parse response
+        try:
+            content = response.get("content", "")
+            if not content:
+                raise ValueError("Empty response content")
+            
+            result = json.loads(content)
+            report_markdown = result.get("report_markdown", "")
+            
+            if not report_markdown:
+                raise ValueError("No report content generated")
+            
+            return {
+                "success": True,
+                "report_markdown": report_markdown,
+                "key_findings": result.get("key_findings", []),
+                "executive_summary": result.get("executive_summary", "")
+            }
+            
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.error(f"Failed to parse report response: {e}")
+            # Fallback: try to extract content directly
+            raw_content = response.get("content", "")
+            if raw_content and len(raw_content) > 100:
+                return {
+                    "success": True,
+                    "report_markdown": raw_content,
+                    "key_findings": [],
+                    "executive_summary": ""
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"Response parsing failed: {str(e)}",
+                    "report_markdown": ""
+                }
         
-        content += "\n## Conclusion\n\n"
-        content += f"Based on the available evidence, {topic} presents both opportunities and challenges that warrant further investigation.\n"
-        
-        return content
+    except Exception as e:
+        logger.error(f"Content generation failed: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "report_markdown": ""
+        }
+
+
+def _organize_claims_for_writing(claims: List[Claim]) -> Dict[str, List[Claim]]:
+    """Organize claims by type and confidence for structured writing."""
+    organized = {
+        "high_confidence_facts": [],
+        "medium_confidence_facts": [],
+        "estimates_and_projections": [],
+        "expert_opinions": [],
+        "other_findings": []
+    }
     
-    def _format_final_report(self, topic: str, main_content: str, reference_list: List[Dict[str, Any]], 
-                            verification_result: Dict[str, Any], analysis_result: Dict[str, Any]) -> str:
-        """
-        Format the final report with metadata and references.
-        
-        Args:
-            topic: Research topic
-            main_content: Generated main content
-            reference_list: List of references
-            verification_result: Verification results
-            analysis_result: Analysis results
-        
-        Returns:
-            Complete formatted report
-        """
-        # Start with main content
-        report = main_content
-        
-        # Ensure proper title
-        if not report.startswith("#"):
-            report = f"# Research Brief: {topic}\n\n" + report
-        
-        # Add references section
-        if reference_list:
-            report += "\n\n## References\n\n"
-            for ref in reference_list:
-                title = ref.get("title", "Unknown Title")
-                url = ref.get("url", "")
-                domain = ref.get("domain", "")
+    for claim in claims:
+        if claim["type"] == "fact":
+            if claim["confidence"] >= 0.8:
+                organized["high_confidence_facts"].append(claim)
+            else:
+                organized["medium_confidence_facts"].append(claim)
+        elif claim["type"] == "estimate":
+            organized["estimates_and_projections"].append(claim)
+        elif claim["type"] == "opinion":
+            organized["expert_opinions"].append(claim)
+        else:
+            organized["other_findings"].append(claim)
+    
+    return organized
+
+
+def _create_citation_mapping(citations: List[Citation]) -> tuple[Dict[str, int], List[Reference]]:
+    """Create citation number mapping and reference list."""
+    citation_map = {}
+    references = []
+    citation_number = 1
+    
+    # Track URLs to avoid duplicates in references
+    seen_urls = set()
+    
+    for citation in citations:
+        for url in citation["urls"]:
+            if url not in seen_urls:
+                citation_map[url] = citation_number
                 
-                # Format reference
-                ref_line = f"{ref['number']}. {title}"
-                if domain:
-                    ref_line += f" - {domain}"
-                if url:
-                    ref_line += f" [{url}]({url})"
+                # Create reference entry
+                reference: Reference = {
+                    "number": citation_number,
+                    "url": url,
+                    "title": _extract_title_from_url(url),
+                    "access_date": datetime.now().strftime("%Y-%m-%d")
+                }
+                references.append(reference)
                 
-                report += ref_line + "\n"
-        
-        # Add research metadata (optional footer)
-        coverage_score = verification_result.get("verification_metrics", {}).get("coverage_score", 0)
-        total_claims = verification_result.get("total_claims", 0)
-        
-        report += f"\n---\n\n"
-        report += f"*Research completed with {len(reference_list)} sources. "
-        report += f"Coverage score: {coverage_score:.1%} ({total_claims} claims analyzed).*\n"
-        
-        return report
+                seen_urls.add(url)
+                citation_number += 1
     
-    def _clean_markdown(self, text: str) -> str:
-        """
-        Clean and validate markdown formatting.
-        
-        Args:
-            text: Raw markdown text
-        
-        Returns:
-            Cleaned markdown
-        """
-        # Basic markdown cleaning
-        # Fix multiple line breaks
-        text = re.sub(r'\n{3,}', '\n\n', text)
-        
-        # Ensure proper heading spacing
-        text = re.sub(r'(^|\n)(#{1,6})', r'\1\n\2', text)
-        text = re.sub(r'(#{1,6}[^\n]*)\n{0,1}([^#\n])', r'\1\n\n\2', text)
-        
-        # Clean up citation formatting
-        text = re.sub(r'\[\s*(\d+)\s*\]', r'[\1]', text)
-        
-        return text.strip()
+    return citation_map, references
 
 
-# Global writer instance
-writer = Writer()
+def _prepare_content_summary(
+    organized_claims: Dict[str, List[Claim]],
+    citation_map: Dict[str, int]
+) -> str:
+    """Prepare organized content summary for LLM."""
+    content_parts = []
+    
+    for category, claims in organized_claims.items():
+        if not claims:
+            continue
+            
+        content_parts.append(f"\n{category.replace('_', ' ').title()}:")
+        
+        for claim in claims:
+            # Find citation numbers for this claim
+            citation_numbers = []
+            for url in claim["source_urls"]:
+                if url in citation_map:
+                    citation_numbers.append(str(citation_map[url]))
+            
+            citation_str = f"[{', '.join(citation_numbers)}]" if citation_numbers else "[?]"
+            
+            content_parts.append(f"- {claim['text']} {citation_str}")
+    
+    return "\n".join(content_parts)
 
 
-async def write(verification_result: Dict[str, Any], 
-               analysis_result: Dict[str, Any], 
-               documents: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Convenience function for report writing."""
-    return await writer.write(verification_result, analysis_result, documents)
+def _add_references_section(report_md: str, references: List[Reference]) -> str:
+    """Add references section to the report."""
+    if not references:
+        return report_md
+    
+    references_section = "\n\n## References\n\n"
+    
+    for ref in sorted(references, key=lambda x: x["number"]):
+        references_section += f"{ref['number']}. {ref['url']}"
+        if ref.get("title"):
+            references_section += f" - {ref['title']}"
+        if ref.get("access_date"):
+            references_section += f" (Accessed: {ref['access_date']})"
+        references_section += "\n"
+    
+    return report_md + references_section
+
+
+def _clean_report_formatting(report_md: str) -> str:
+    """Clean and validate report formatting."""
+    # Remove extra whitespace
+    lines = [line.strip() for line in report_md.split('\n')]
+    
+    # Remove empty lines at start and end
+    while lines and not lines[0]:
+        lines.pop(0)
+    while lines and not lines[-1]:
+        lines.pop()
+    
+    # Ensure proper spacing around headers
+    cleaned_lines = []
+    for i, line in enumerate(lines):
+        if line.startswith('#'):
+            # Add blank line before headers (except first)
+            if i > 0 and lines[i-1]:
+                cleaned_lines.append('')
+            cleaned_lines.append(line)
+            # Add blank line after headers if next line isn't blank
+            if i < len(lines) - 1 and lines[i+1]:
+                cleaned_lines.append('')
+        else:
+            cleaned_lines.append(line)
+    
+    return '\n'.join(cleaned_lines)
+
+
+def _extract_section_headers(report_md: str) -> List[str]:
+    """Extract section headers from markdown report."""
+    headers = []
+    for line in report_md.split('\n'):
+        line = line.strip()
+        if line.startswith('#'):
+            # Remove markdown header syntax and clean
+            header = line.lstrip('#').strip()
+            if header:
+                headers.append(header)
+    return headers
+
+
+def _extract_title_from_url(url: str) -> Optional[str]:
+    """Extract a simple title from URL for reference formatting."""
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        domain = parsed.netloc
+        path = parsed.path
+        
+        # Simple title extraction
+        if path and path != '/':
+            title_parts = path.split('/')[-1].split('-')
+            if title_parts:
+                return ' '.join(word.capitalize() for word in title_parts[:3])
+        
+        return domain
+    except Exception:
+        return None
+
+
+# Utility functions for report processing
+def validate_report_structure(report_md: str) -> Dict[str, Any]:
+    """Validate report structure and content."""
+    validation = {
+        "has_introduction": False,
+        "has_conclusion": False,
+        "has_citations": False,
+        "has_references": False,
+        "word_count": 0,
+        "section_count": 0,
+        "citation_count": 0
+    }
+    
+    lines = report_md.split('\n')
+    validation["word_count"] = len(report_md.split())
+    
+    # Check for structural elements
+    content_lower = report_md.lower()
+    validation["has_introduction"] = any(word in content_lower for word in ["introduction", "overview", "background"])
+    validation["has_conclusion"] = any(word in content_lower for word in ["conclusion", "summary", "implications"])
+    validation["has_references"] = "## references" in content_lower or "# references" in content_lower
+    
+    # Count sections and citations
+    validation["section_count"] = len([line for line in lines if line.strip().startswith('#')])
+    
+    import re
+    citations = re.findall(r'\[\d+\]', report_md)
+    validation["citation_count"] = len(set(citations))
+    validation["has_citations"] = validation["citation_count"] > 0
+    
+    return validation
+
+
+def export_report_to_json(report: Report) -> str:
+    """Export report to JSON format for API/storage."""
+    return json.dumps(report, indent=2, default=str)

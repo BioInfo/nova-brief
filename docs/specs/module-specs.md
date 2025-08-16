@@ -223,6 +223,7 @@ Rules:
 - Inline citations as [n] in-text; stable numbering across document.
 - References de-duplicated; preserve canonical URLs.
 - Include brief intro, structured sections, and concise conclusion with risks/numbers where relevant.
+- For JSON export, generate a Pydantic model for the Report schema, convert it to a JSON Schema, and pass it to the OpenRouter API's structured output/tool-calling parameters to enforce a valid structure.
 
 Invariants:
 - All non-obvious claims referenced.

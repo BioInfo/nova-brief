@@ -30,7 +30,7 @@ References:
 
 - No keys in code or repo.
 - Use environment variables for:
-  - CEREBRAS_API_KEY
+  - OPENROUTER_API_KEY
   - Optional: search provider keys (e.g., Tavily)
 - .env.example contains placeholders only; never actual keys.
 - Rotation:

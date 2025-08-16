@@ -1,229 +1,273 @@
-"""
-Searcher agent module for executing web searches and collecting results.
-Coordinates with search tools and manages result aggregation.
-"""
+"""Searcher component for executing web searches and collecting results."""
 
-import asyncio
-from typing import List, Dict, Any, Optional
+from typing import Dict, List, Any
 from ..tools.web_search import run as web_search_run
+from ..storage.models import SearchResult, Constraints
 from ..observability.logging import get_logger
-from ..observability.tracing import start_span, end_span
+from ..observability.tracing import TimedOperation, emit_event
 
 logger = get_logger(__name__)
 
 
-class Searcher:
-    """Search execution agent that runs queries and aggregates results."""
+async def search(
+    queries: List[str],
+    constraints: Constraints,
+    provider: str = "duckduckgo",
+    max_results_per_query: int = 10
+) -> Dict[str, Any]:
+    """
+    Execute search queries using the configured search provider.
     
-    def __init__(self):
-        self.max_results_per_query = 10
-        self.concurrent_searches = 3
-        self.deduplication_threshold = 0.8  # For future similarity checking
+    Args:
+        queries: List of search query strings
+        constraints: Research constraints including domain filters
+        provider: Search provider to use (default: duckduckgo)
+        max_results_per_query: Maximum results per individual query
     
-    async def search(self, queries: List[str], max_results: Optional[int] = None) -> Dict[str, Any]:
-        """
-        Execute multiple search queries and aggregate results.
-        
-        Args:
-            queries: List of search queries to execute
-            max_results: Maximum results per query (optional)
-        
-        Returns:
-            Dict containing aggregated search results
-        """
-        span_id = start_span("search", "agent", {
-            "query_count": len(queries),
-            "max_results": max_results
-        })
-        
+    Returns:
+        Dictionary with success status, search results, and metadata
+    """
+    with TimedOperation("agent_searcher") as timer:
         try:
-            logger.info(f"Executing {len(queries)} search queries")
+            if not queries:
+                return {
+                    "success": False,
+                    "error": "No search queries provided",
+                    "search_results": []
+                }
             
-            max_results = max_results or self.max_results_per_query
+            logger.info(
+                f"Executing search: {len(queries)} queries with {provider}",
+                extra={
+                    "queries": queries,
+                    "provider": provider,
+                    "max_results_per_query": max_results_per_query,
+                    "per_domain_cap": constraints.get("per_domain_cap", 3)
+                }
+            )
             
-            # Execute searches concurrently in batches
-            all_results = []
-            all_search_metadata = []
+            # Extract domain constraints
+            include_domains = constraints.get("include_domains", [])
+            exclude_domains = constraints.get("exclude_domains", [])
+            per_domain_cap = constraints.get("per_domain_cap", 3)
             
-            # Process queries in batches to avoid overwhelming providers
-            for i in range(0, len(queries), self.concurrent_searches):
-                batch = queries[i:i + self.concurrent_searches]
-                batch_results = await self._execute_search_batch(batch, max_results)
-                
-                for query_result in batch_results:
-                    if query_result["success"]:
-                        all_results.extend(query_result["results"])
-                    all_search_metadata.append({
-                        "query": query_result["query"],
-                        "result_count": query_result["total_results"],
-                        "success": query_result["success"],
-                        "error": query_result.get("error")
+            # Execute web search
+            search_result = await web_search_run(
+                queries=queries,
+                provider=provider,
+                max_results_per_query=max_results_per_query,
+                include_domains=include_domains if include_domains else None,
+                exclude_domains=exclude_domains if exclude_domains else None,
+                per_domain_cap=per_domain_cap
+            )
+            
+            if not search_result["success"]:
+                logger.error(f"Web search failed: {search_result.get('error')}")
+                return {
+                    "success": False,
+                    "error": f"SEARCH_FAILED: {search_result.get('error')}",
+                    "search_results": []
+                }
+            
+            # Convert to SearchResult objects
+            raw_results = search_result.get("results", [])
+            search_results = []
+            
+            for result_dict in raw_results:
+                try:
+                    # Validate and normalize result
+                    if not _validate_search_result(result_dict):
+                        logger.warning(f"Invalid search result skipped: {result_dict}")
+                        continue
+                    
+                    search_results.append({
+                        "title": result_dict["title"].strip(),
+                        "url": result_dict["url"].strip(),
+                        "snippet": result_dict["snippet"].strip()
                     })
+                    
+                except Exception as e:
+                    logger.warning(f"Error processing search result: {e}")
+                    continue
             
-            # Deduplicate results
-            deduplicated_results = self._deduplicate_results(all_results)
+            # Apply additional filtering and validation
+            search_results = _post_process_results(search_results, constraints)
             
             # Calculate metrics
-            total_queries = len(queries)
-            successful_queries = sum(1 for meta in all_search_metadata if meta["success"])
-            total_unique_results = len(deduplicated_results)
+            domains = set()
+            for result in search_results:
+                try:
+                    from urllib.parse import urlparse
+                    domain = urlparse(result["url"]).netloc
+                    domains.add(domain)
+                except Exception:
+                    continue
             
-            result = {
-                "queries": queries,
-                "search_metadata": all_search_metadata,
-                "results": deduplicated_results,
-                "metrics": {
-                    "total_queries": total_queries,
-                    "successful_queries": successful_queries,
-                    "total_raw_results": len(all_results),
-                    "total_unique_results": total_unique_results,
-                    "deduplication_ratio": 1 - (total_unique_results / max(len(all_results), 1))
-                },
-                "success": successful_queries > 0
+            metrics = {
+                "total_queries": len(queries),
+                "results_count": len(search_results),
+                "domain_diversity": len(domains),
+                "provider": provider,
+                "per_domain_cap": per_domain_cap
             }
             
-            logger.info(f"Search completed: {successful_queries}/{total_queries} queries successful, {total_unique_results} unique results")
-            end_span(span_id, success=True, additional_data={
-                "successful_queries": successful_queries,
-                "total_results": total_unique_results
-            })
+            logger.info(
+                f"Search completed: {len(search_results)} results from {len(domains)} domains",
+                extra=metrics
+            )
             
-            return result
+            emit_event(
+                "search_completed",
+                metadata=metrics
+            )
+            
+            return {
+                "success": True,
+                "search_results": search_results,
+                "metadata": metrics
+            }
             
         except Exception as e:
-            error_msg = f"Search execution failed: {e}"
-            logger.error(error_msg)
-            end_span(span_id, success=False, error=error_msg)
+            logger.error(f"Search operation failed: {e}")
+            emit_event(
+                "search_error",
+                metadata={
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                    "queries_count": len(queries) if queries else 0
+                }
+            )
+            
             return {
-                "queries": queries,
-                "search_metadata": [],
-                "results": [],
-                "metrics": {
-                    "total_queries": len(queries),
-                    "successful_queries": 0,
-                    "total_raw_results": 0,
-                    "total_unique_results": 0,
-                    "deduplication_ratio": 0
-                },
                 "success": False,
-                "error": str(e)
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "search_results": []
             }
+
+
+def _validate_search_result(result: Dict[str, Any]) -> bool:
+    """Validate a search result dictionary."""
+    required_fields = {"title", "url", "snippet"}
     
-    async def _execute_search_batch(self, queries: List[str], max_results: int) -> List[Dict[str, Any]]:
-        """
-        Execute a batch of search queries concurrently.
-        
-        Args:
-            queries: Batch of queries to execute
-            max_results: Maximum results per query
-        
-        Returns:
-            List of search results for each query
-        """
-        tasks = []
-        for query in queries:
-            task = web_search_run(query, max_results)
-            tasks.append(task)
-        
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Handle exceptions and convert to consistent format
-        formatted_results = []
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                # Convert exception to error result
-                formatted_results.append({
-                    "query": queries[i],
-                    "results": [],
-                    "total_results": 0,
-                    "success": False,
-                    "error": str(result)
-                })
-            else:
-                formatted_results.append(result)
-        
-        return formatted_results
+    # Check required fields exist and are strings
+    if not all(field in result and isinstance(result[field], str) for field in required_fields):
+        return False
     
-    def _deduplicate_results(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Remove duplicate results based on URL.
-        
-        Args:
-            results: List of search results
-        
-        Returns:
-            Deduplicated list of results
-        """
-        seen_urls = set()
-        deduplicated = []
-        
-        for result in results:
-            url = result.get("url", "")
-            # Normalize URL for comparison
-            normalized_url = self._normalize_url(url)
-            
-            if normalized_url not in seen_urls:
-                seen_urls.add(normalized_url)
-                # Add normalized URL for future reference
-                result["normalized_url"] = normalized_url
-                deduplicated.append(result)
-            else:
-                logger.debug(f"Skipping duplicate URL: {url}")
-        
-        return deduplicated
+    # Check URL format
+    url = result["url"]
+    if not url.startswith(("http://", "https://")):
+        return False
     
-    def _normalize_url(self, url: str) -> str:
-        """
-        Normalize URL for deduplication.
+    # Check for minimum content
+    if not result["title"].strip() or not result["url"].strip():
+        return False
+    
+    return True
+
+
+def _post_process_results(results: List[Dict[str, Any]], constraints: Constraints) -> List[Dict[str, Any]]:
+    """Apply additional filtering and validation to search results."""
+    processed_results = []
+    seen_urls = set()
+    
+    for result in results:
+        # Skip duplicates
+        url = result["url"]
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
         
-        Args:
-            url: Original URL
-        
-        Returns:
-            Normalized URL
-        """
-        # Simple normalization - remove trailing slashes, fragments, some query params
-        import urllib.parse
-        
+        # Apply quality filters
+        if _passes_quality_filters(result, constraints):
+            processed_results.append(result)
+    
+    return processed_results
+
+
+def _passes_quality_filters(result: Dict[str, Any], constraints: Constraints) -> bool:
+    """Check if a search result passes quality filters."""
+    
+    # Minimum content length
+    if len(result["title"]) < 10 or len(result["snippet"]) < 20:
+        return False
+    
+    # Check for spam patterns
+    title = result["title"].lower()
+    snippet = result["snippet"].lower()
+    
+    # Simple spam detection
+    spam_patterns = [
+        "click here", "buy now", "free download", "limited time",
+        "act now", "special offer", "$$$", "make money"
+    ]
+    
+    text_to_check = f"{title} {snippet}"
+    spam_score = sum(1 for pattern in spam_patterns if pattern in text_to_check)
+    
+    if spam_score >= 2:
+        logger.debug(f"Filtered spam result: {result['title']}")
+        return False
+    
+    # Check for reasonable title length (not too long, likely spam)
+    if len(result["title"]) > 200:
+        return False
+    
+    return True
+
+
+# Utility functions for search result processing
+def extract_domains_from_results(results: List[Dict[str, Any]]) -> List[str]:
+    """Extract unique domains from search results."""
+    domains = set()
+    
+    for result in results:
         try:
-            parsed = urllib.parse.urlparse(url)
-            
-            # Remove common tracking parameters
-            query_params = urllib.parse.parse_qs(parsed.query)
-            filtered_params = {
-                k: v for k, v in query_params.items()
-                if k not in ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term']
-            }
-            
-            # Rebuild query string
-            filtered_query = urllib.parse.urlencode(filtered_params, doseq=True)
-            
-            # Normalize path (remove trailing slash)
-            normalized_path = parsed.path.rstrip('/')
-            if not normalized_path:
-                normalized_path = '/'
-            
-            # Rebuild URL without fragment
-            normalized = urllib.parse.urlunparse((
-                parsed.scheme,
-                parsed.netloc.lower(),
-                normalized_path,
-                parsed.params,
-                filtered_query,
-                ''  # Remove fragment
-            ))
-            
-            return normalized
-            
+            from urllib.parse import urlparse
+            domain = urlparse(result["url"]).netloc
+            if domain:
+                domains.add(domain)
         except Exception:
-            # If normalization fails, return original URL
-            return url
+            continue
+    
+    return sorted(list(domains))
 
 
-# Global searcher instance
-searcher = Searcher()
+def filter_results_by_domain(
+    results: List[Dict[str, Any]], 
+    allowed_domains: List[str]
+) -> List[Dict[str, Any]]:
+    """Filter search results to only include specified domains."""
+    if not allowed_domains:
+        return results
+    
+    filtered_results = []
+    allowed_set = set(allowed_domains)
+    
+    for result in results:
+        try:
+            from urllib.parse import urlparse
+            domain = urlparse(result["url"]).netloc
+            if domain in allowed_set:
+                filtered_results.append(result)
+        except Exception:
+            continue
+    
+    return filtered_results
 
 
-async def search(queries: List[str], max_results: Optional[int] = None) -> Dict[str, Any]:
-    """Convenience function for search execution."""
-    return await searcher.search(queries, max_results)
+def group_results_by_domain(results: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    """Group search results by domain."""
+    grouped = {}
+    
+    for result in results:
+        try:
+            from urllib.parse import urlparse
+            domain = urlparse(result["url"]).netloc
+            if domain not in grouped:
+                grouped[domain] = []
+            grouped[domain].append(result)
+        except Exception:
+            continue
+    
+    return grouped

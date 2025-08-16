@@ -1,211 +1,211 @@
-"""
-PDF parsing tool for extracting text content from PDF documents.
-Handles both local files and URLs pointing to PDFs.
-"""
+"""PDF parsing tool for Nova Brief."""
 
-import asyncio
-import os
-import tempfile
 from typing import Dict, Any, Optional, Union
-from pathlib import Path
+import io
 import httpx
-from pypdf import PdfReader
 from ..observability.logging import get_logger
-from ..observability.tracing import start_span, end_span
+from ..observability.tracing import TimedOperation, emit_event
 
 logger = get_logger(__name__)
 
 
-class ParsePdfTool:
-    """Tool for parsing PDF documents and extracting text."""
+async def run(
+    source: Union[str, bytes],
+    max_pages: Optional[int] = None,
+    timeout: float = 15.0
+) -> Dict[str, Any]:
+    """
+    Parse PDF content from URL or bytes.
     
-    def __init__(self):
-        self.timeout = int(os.getenv("FETCH_TIMEOUT_S", "15"))
-        self.user_agent = os.getenv("USER_AGENT", "NovaBrief-Research/0.1")
-        self.max_file_size = 50 * 1024 * 1024  # 50MB limit
-        self.max_pages = 100  # Limit pages to prevent excessive processing
+    Args:
+        source: PDF URL or raw bytes
+        max_pages: Maximum number of pages to process
+        timeout: Request timeout if source is URL
     
-    async def run(self, source: Union[str, Path], extract_metadata: bool = True) -> Dict[str, Any]:
-        """
-        Parse PDF and extract text content.
-        
-        Args:
-            source: File path or URL to PDF
-            extract_metadata: Whether to extract PDF metadata
-        
-        Returns:
-            Dict with extracted text, metadata, and status
-        """
-        span_id = start_span("parse_pdf", "tools", {"source": str(source)})
-        
+    Returns:
+        Dictionary with success status, extracted text, and metadata
+    """
+    with TimedOperation("parse_pdf") as timer:
         try:
-            # Determine if source is URL or file path
-            if isinstance(source, str) and (source.startswith("http://") or source.startswith("https://")):
-                # Download PDF from URL
-                pdf_path = await self._download_pdf(source)
-                is_temp_file = True
+            # Import here to handle missing dependency gracefully
+            from pypdf import PdfReader
+            
+            pdf_bytes = None
+            source_type = "bytes" if isinstance(source, bytes) else "url"
+            
+            if isinstance(source, str):
+                # Fetch PDF from URL
+                logger.info(f"Fetching PDF from URL: {source}")
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.get(source)
+                    response.raise_for_status()
+                    
+                    content_type = response.headers.get("content-type", "").lower()
+                    if "application/pdf" not in content_type:
+                        return {
+                            "success": False,
+                            "error": f"Not a PDF: {content_type}",
+                            "source": source
+                        }
+                    
+                    pdf_bytes = response.content
             else:
-                # Use local file
-                pdf_path = Path(source)
-                is_temp_file = False
-                
-                if not pdf_path.exists():
-                    raise FileNotFoundError(f"PDF file not found: {source}")
+                pdf_bytes = source
             
-            logger.info(f"Parsing PDF: {pdf_path}")
+            if not pdf_bytes:
+                return {
+                    "success": False,
+                    "error": "No PDF data provided",
+                    "source": str(source)
+                }
             
-            # Parse PDF
-            result = await self._parse_pdf_file(pdf_path, extract_metadata)
-            result["source"] = str(source)
-            result["success"] = True
+            # Parse PDF content
+            logger.info(f"Parsing PDF: {len(pdf_bytes)} bytes")
             
-            # Clean up temp file if needed
-            if is_temp_file:
-                pdf_path.unlink(missing_ok=True)
+            pdf_stream = io.BytesIO(pdf_bytes)
+            reader = PdfReader(pdf_stream)
             
-            logger.info(f"Successfully parsed PDF: {result.get('page_count', 0)} pages, {result.get('text_length', 0)} characters")
-            end_span(span_id, success=True, additional_data={
-                "page_count": result.get("page_count", 0),
-                "text_length": result.get("text_length", 0)
+            # Extract metadata
+            metadata = {
+                "source": str(source),
+                "source_type": source_type,
+                "total_pages": len(reader.pages),
+                "size_bytes": len(pdf_bytes)
+            }
+            
+            # Extract PDF info if available
+            if reader.metadata:
+                pdf_info = dict(reader.metadata)
+                metadata.update({
+                    "title": pdf_info.get("/Title", ""),
+                    "author": pdf_info.get("/Author", ""),
+                    "subject": pdf_info.get("/Subject", ""),
+                    "creator": pdf_info.get("/Creator", ""),
+                    "producer": pdf_info.get("/Producer", ""),
+                    "creation_date": str(pdf_info.get("/CreationDate", "")),
+                    "modification_date": str(pdf_info.get("/ModDate", ""))
+                })
+            
+            # Determine pages to process
+            total_pages = len(reader.pages)
+            pages_to_process = min(max_pages or total_pages, total_pages)
+            
+            # Extract text from pages
+            extracted_text = ""
+            processed_pages = 0
+            
+            for page_num in range(pages_to_process):
+                try:
+                    page = reader.pages[page_num]
+                    page_text = page.extract_text()
+                    
+                    if page_text.strip():
+                        extracted_text += f"\n--- Page {page_num + 1} ---\n"
+                        extracted_text += page_text.strip()
+                        extracted_text += "\n"
+                    
+                    processed_pages += 1
+                    
+                except Exception as e:
+                    logger.warning(f"Error extracting text from page {page_num + 1}: {e}")
+                    continue
+            
+            metadata.update({
+                "processed_pages": processed_pages,
+                "text_length": len(extracted_text)
             })
             
-            return result
+            if not extracted_text.strip():
+                logger.warning(f"No text extracted from PDF: {source}")
+                return {
+                    "success": False,
+                    "error": "NO_TEXT_EXTRACTED",
+                    "source": str(source),
+                    "metadata": metadata
+                }
             
-        except Exception as e:
-            error_msg = f"Failed to parse PDF {source}: {e}"
-            logger.error(error_msg)
-            end_span(span_id, success=False, error=error_msg)
-            return {
-                "source": str(source),
-                "success": False,
-                "error": "parse_error",
-                "error_message": error_msg
-            }
-    
-    async def _download_pdf(self, url: str) -> Path:
-        """
-        Download PDF from URL to temporary file.
-        
-        Args:
-            url: URL to PDF
-        
-        Returns:
-            Path to downloaded file
-        """
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.get(
-                url,
-                headers={
-                    "User-Agent": self.user_agent,
-                    "Accept": "application/pdf,*/*"
-                },
-                follow_redirects=True
+            logger.info(
+                f"PDF parsed successfully: {processed_pages} pages, {len(extracted_text)} chars",
+                extra={
+                    "source": str(source),
+                    "total_pages": total_pages,
+                    "processed_pages": processed_pages,
+                    "text_length": len(extracted_text)
+                }
             )
             
-            response.raise_for_status()
-            
-            # Check content type
-            content_type = response.headers.get("content-type", "").lower()
-            if "application/pdf" not in content_type:
-                logger.warning(f"URL may not be a PDF: {content_type}")
-            
-            # Check file size
-            content_length = len(response.content)
-            if content_length > self.max_file_size:
-                raise ValueError(f"PDF too large: {content_length} bytes")
-            
-            # Save to temporary file
-            temp_file = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
-            temp_file.write(response.content)
-            temp_file.close()
-            
-            return Path(temp_file.name)
-    
-    async def _parse_pdf_file(self, pdf_path: Path, extract_metadata: bool) -> Dict[str, Any]:
-        """
-        Parse PDF file and extract text and metadata.
-        
-        Args:
-            pdf_path: Path to PDF file
-            extract_metadata: Whether to extract metadata
-        
-        Returns:
-            Dict with extracted content
-        """
-        def _extract_text():
-            """Synchronous PDF text extraction."""
-            with open(pdf_path, 'rb') as file:
-                reader = PdfReader(file)
-                
-                result = {
-                    "page_count": len(reader.pages),
-                    "pages": [],
-                    "text": "",
-                    "text_length": 0
+            emit_event(
+                "pdf_parsed",
+                metadata={
+                    "source_type": source_type,
+                    "total_pages": total_pages,
+                    "processed_pages": processed_pages,
+                    "text_length": len(extracted_text),
+                    "has_metadata": bool(reader.metadata)
                 }
-                
-                # Extract metadata if requested
-                if extract_metadata and reader.metadata:
-                    metadata = {}
-                    for key, value in reader.metadata.items():
-                        if key.startswith('/'):
-                            clean_key = key[1:].lower()
-                            metadata[clean_key] = str(value) if value else None
-                    result["metadata"] = metadata
-                
-                # Extract text from pages
-                full_text = []
-                pages_to_process = min(len(reader.pages), self.max_pages)
-                
-                for i in range(pages_to_process):
-                    try:
-                        page = reader.pages[i]
-                        page_text = page.extract_text()
-                        
-                        page_info = {
-                            "page_number": i + 1,
-                            "text": page_text,
-                            "text_length": len(page_text)
-                        }
-                        
-                        result["pages"].append(page_info)
-                        full_text.append(page_text)
-                        
-                    except Exception as e:
-                        logger.warning(f"Failed to extract text from page {i + 1}: {e}")
-                        result["pages"].append({
-                            "page_number": i + 1,
-                            "text": "",
-                            "text_length": 0,
-                            "error": str(e)
-                        })
-                
-                # Combine all text
-                result["text"] = "\n\n".join(full_text)
-                result["text_length"] = len(result["text"])
-                
-                if pages_to_process < len(reader.pages):
-                    result["truncated"] = True
-                    result["total_pages"] = len(reader.pages)
-                
-                return result
-        
-        # Run in thread pool to avoid blocking
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            loop = asyncio.get_event_loop()
-            return await loop.run_in_executor(executor, _extract_text)
+            )
+            
+            return {
+                "success": True,
+                "source": str(source),
+                "text": extracted_text.strip(),
+                "metadata": metadata
+            }
+            
+        except ImportError:
+            logger.error("pypdf package not installed")
+            return {
+                "success": False,
+                "error": "PDF_PARSER_UNAVAILABLE",
+                "source": str(source)
+            }
+        except httpx.TimeoutException:
+            logger.warning(f"Timeout fetching PDF: {source}")
+            return {
+                "success": False,
+                "error": "TIMEOUT",
+                "source": str(source)
+            }
+        except httpx.HTTPStatusError as e:
+            logger.warning(f"HTTP error fetching PDF {source}: {e.response.status_code}")
+            return {
+                "success": False,
+                "error": f"HTTP_{e.response.status_code}",
+                "source": str(source)
+            }
+        except Exception as e:
+            logger.error(f"Error parsing PDF from {source}: {e}")
+            emit_event(
+                "pdf_parse_error",
+                metadata={
+                    "source": str(source),
+                    "error_type": type(e).__name__,
+                    "error_message": str(e)
+                }
+            )
+            return {
+                "success": False,
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "source": str(source)
+            }
 
 
-# Global tool instance
-parse_pdf_tool = ParsePdfTool()
-
-
-async def run(source: Union[str, Path], extract_metadata: bool = True) -> Dict[str, Any]:
-    """Convenience function for PDF parsing."""
-    return await parse_pdf_tool.run(source, extract_metadata)
-
-
-def run_sync(source: Union[str, Path], extract_metadata: bool = True) -> Dict[str, Any]:
-    """Synchronous wrapper for PDF parsing."""
-    return asyncio.run(run(source, extract_metadata))
+def extract_text_from_bytes(pdf_bytes: bytes, max_pages: Optional[int] = None) -> str:
+    """
+    Convenience function to extract text from PDF bytes.
+    
+    Args:
+        pdf_bytes: PDF file as bytes
+        max_pages: Maximum pages to process
+    
+    Returns:
+        Extracted text content
+    """
+    import asyncio
+    
+    async def _extract():
+        result = await run(pdf_bytes, max_pages=max_pages)
+        return result.get("text", "") if result.get("success") else ""
+    
+    return asyncio.run(_extract())
