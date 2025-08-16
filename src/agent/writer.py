@@ -29,7 +29,14 @@ Guidelines:
 - Conclude with key implications and future considerations
 - Maintain objective, professional tone throughout
 
-Structure the response as a complete markdown report."""
+YOU MUST respond with ONLY a valid JSON object in this exact format:
+{
+  "report_markdown": "Complete markdown report with numbered citations",
+  "key_findings": ["finding 1", "finding 2", "finding 3"],
+  "executive_summary": "Brief executive summary (2-3 sentences)"
+}
+
+DO NOT include any text before or after the JSON. ONLY return the JSON object."""
 
 
 async def write(
@@ -219,7 +226,7 @@ Target: 800-1200 words."""
             "additionalProperties": False
         }
         
-        # Call LLM for report generation
+        # Call LLM for report generation (using prompt-based JSON instead of structured output)
         messages = [
             {"role": "system", "content": WRITING_SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt}
@@ -228,8 +235,8 @@ Target: 800-1200 words."""
         response = await chat(
             messages=messages,
             temperature=0.2,
-            max_tokens=3000,
-            response_format=create_json_schema_format(json_schema)
+            max_tokens=3000
+            # Note: Removed response_format as it doesn't work with gpt-oss-120b
         )
         
         if not response["success"]:
@@ -239,13 +246,24 @@ Target: 800-1200 words."""
                 "report_markdown": ""
             }
         
-        # Parse response
+        # Parse response with robust JSON extraction
         try:
             content = response.get("content", "")
             if not content:
                 raise ValueError("Empty response content")
             
-            result = json.loads(content)
+            # Try direct JSON parsing first
+            try:
+                result = json.loads(content)
+            except json.JSONDecodeError:
+                # Fallback: Extract JSON from text using regex
+                import re
+                json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                if json_match:
+                    result = json.loads(json_match.group(0))
+                else:
+                    raise ValueError("No valid JSON found in response")
+            
             report_markdown = result.get("report_markdown", "")
             
             if not report_markdown:
@@ -260,6 +278,7 @@ Target: 800-1200 words."""
             
         except (json.JSONDecodeError, ValueError) as e:
             logger.error(f"Failed to parse report response: {e}")
+            logger.error(f"Raw content: {content[:500]}...")
             # Fallback: try to extract content directly
             raw_content = response.get("content", "")
             if raw_content and len(raw_content) > 100:

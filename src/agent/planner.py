@@ -16,7 +16,7 @@ Guidelines:
 1. Generate 3-5 specific sub-questions that comprehensively cover the topic
 2. Create 5-8 diverse search queries using different approaches:
    - Direct topic searches
-   - Question-based searches  
+   - Question-based searches
    - Specific aspect searches
    - Authority/expert searches (site:edu, site:gov)
    - Recent news/analysis searches
@@ -24,11 +24,13 @@ Guidelines:
 4. Focus on finding authoritative, credible sources
 5. Avoid duplicate or overly similar queries
 
-Respond in JSON format:
+YOU MUST respond with ONLY a valid JSON object in this exact format:
 {
   "sub_questions": ["question1", "question2", ...],
   "queries": ["query1", "query2", ...]
-}"""
+}
+
+DO NOT include any text before or after the JSON. ONLY return the JSON object."""
 
 
 async def plan(
@@ -102,8 +104,8 @@ async def plan(
             response = await chat(
                 messages=messages,
                 temperature=0.3,
-                max_tokens=1000,
-                response_format=create_json_schema_format(json_schema)
+                max_tokens=1000
+                # Note: Removed response_format as it doesn't work with gpt-oss-120b
             )
             
             if not response["success"]:
@@ -115,19 +117,31 @@ async def plan(
                     "queries": []
                 }
             
-            # Parse response content
+            # Parse response content with robust JSON extraction
             try:
                 import json
                 content = response.get("content", "")
                 if not content:
                     raise ValueError("Empty response content")
                 
-                planning_result = json.loads(content)
+                # Try direct JSON parsing first
+                try:
+                    planning_result = json.loads(content)
+                except json.JSONDecodeError:
+                    # Fallback: Extract JSON from text using regex
+                    import re
+                    json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                    if json_match:
+                        planning_result = json.loads(json_match.group(0))
+                    else:
+                        raise ValueError("No valid JSON found in response")
+                
                 sub_questions = planning_result.get("sub_questions", [])
                 queries = planning_result.get("queries", [])
                 
             except (json.JSONDecodeError, ValueError) as e:
                 logger.error(f"Failed to parse planning response: {e}")
+                logger.error(f"Raw content: {content[:500]}...")
                 # Fallback to simple queries
                 sub_questions, queries = _generate_fallback_plan(topic, constraints)
             

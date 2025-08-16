@@ -86,7 +86,7 @@ async def run(
         Dictionary with success status, extracted content, and metadata
     """
     if not user_agent:
-        user_agent = os.getenv("USER_AGENT", "NovaBrief-Research/0.1")
+        user_agent = os.getenv("USER_AGENT", "Nova-Brief Academic Research Agent/1.0 (+https://github.com/BioInfo/nova-brief; research@nova-brief.ai)")
     
     with TimedOperation(f"fetch_url") as timer:
         try:

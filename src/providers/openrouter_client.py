@@ -41,7 +41,11 @@ class OpenRouterClient:
         self.client = OpenAI(
             api_key=self.api_key,
             base_url=self.base_url,
-            timeout=timeout
+            timeout=timeout,
+            default_headers={
+                "HTTP-Referer": "https://github.com/BioInfo/nova-brief",
+                "X-Title": "Nova Brief Research Agent"
+            }
         )
         
         logger.info(
@@ -80,12 +84,11 @@ class OpenRouterClient:
         """
         with TimedOperation("openrouter_chat_completion") as timer:
             try:
-                # Prepare request parameters with Cerebras provider pinning
+                # Prepare request parameters for OpenRouter
                 request_params = {
                     "model": self.model,
                     "messages": messages,
                     "temperature": temperature,
-                    "providers": ["cerebras"],  # Pin to Cerebras provider
                     **kwargs
                 }
                 
@@ -123,15 +126,31 @@ class OpenRouterClient:
                     "model": response.model,
                 }
                 
-                # Log successful response
+                # Log successful response with debug info
+                content = response.choices[0].message.content if response.choices else None
                 logger.info(
                     "Chat completion successful",
                     extra={
                         "response_id": response.id,
                         "model": response.model,
+                        "has_content": bool(content),
+                        "content_length": len(content) if content else 0,
+                        "response_choices": len(response.choices),
                         **metrics
                     }
                 )
+                
+                # Debug log for empty responses
+                if not content:
+                    logger.warning(
+                        "Empty response content detected",
+                        extra={
+                            "response_id": response.id,
+                            "choices_count": len(response.choices),
+                            "choice_finish_reason": response.choices[0].finish_reason if response.choices else None,
+                            "choice_message": str(response.choices[0].message) if response.choices else None
+                        }
+                    )
                 
                 emit_event(
                     "chat_completion_success",

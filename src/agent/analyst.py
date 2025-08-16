@@ -27,7 +27,20 @@ Guidelines:
 - Include diverse perspectives when available
 - Flag claims that need stronger evidence
 
-Respond in JSON format with claims and preliminary sections."""
+CRITICAL: You MUST respond with ONLY a valid JSON object in this exact format, with no additional text:
+{
+  "claims": [
+    {
+      "text": "specific verifiable claim",
+      "type": "fact",
+      "confidence": 0.85,
+      "source_urls": ["https://example.com"]
+    }
+  ],
+  "sections": ["Key Theme 1", "Key Theme 2"]
+}
+
+Do not include any text before or after the JSON. Only valid JSON."""
 
 
 async def analyze(
@@ -255,11 +268,11 @@ Extract specific claims from this content, focusing on verifiable facts, estimat
             {"role": "user", "content": user_prompt}
         ]
         
+        # Use prompt-based JSON instead of structured output (which fails on gpt-oss-120b)
         response = await chat(
             messages=messages,
             temperature=0.1,
-            max_tokens=2000,
-            response_format=create_json_schema_format(json_schema)
+            max_tokens=2000
         )
         
         if not response["success"]:
@@ -271,18 +284,32 @@ Extract specific claims from this content, focusing on verifiable facts, estimat
                 "sections": []
             }
         
-        # Parse LLM response
+        # Parse LLM response with robust JSON extraction
         try:
             content = response.get("content", "")
             if not content:
                 raise ValueError("Empty response content")
             
-            analysis_result = json.loads(content)
+            # Try to extract JSON from response (handle cases where model adds extra text)
+            json_content = content.strip()
+            
+            # Look for JSON object boundaries if there's extra text
+            if not json_content.startswith('{'):
+                # Try to find JSON in the content
+                import re
+                json_match = re.search(r'\{.*\}', json_content, re.DOTALL)
+                if json_match:
+                    json_content = json_match.group(0)
+                else:
+                    raise ValueError("No JSON object found in response")
+            
+            analysis_result = json.loads(json_content)
             raw_claims = analysis_result.get("claims", [])
             sections = analysis_result.get("sections", [])
             
         except (json.JSONDecodeError, ValueError) as e:
             logger.error(f"Failed to parse analysis response: {e}")
+            logger.error(f"Raw content: {content[:500]}...")
             return {
                 "success": False,
                 "error": f"Response parsing failed: {str(e)}",

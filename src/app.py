@@ -6,6 +6,10 @@ from typing import Dict, Any, Optional
 import streamlit as st
 from datetime import datetime
 import json
+from dotenv import load_dotenv
+
+# Load environment variables first
+load_dotenv()
 
 # Import agent components
 from src.agent.orchestrator import run_research_pipeline, validate_pipeline_inputs
