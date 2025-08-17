@@ -30,11 +30,13 @@ A fast, reliable deep-research agent that plans, searches, reads, verifies, and 
 - Content quality filtering and validation
 - Iterative refinement with coverage targets
 
-## Evaluation Results
+## Evaluation & Testing
 
-✅ **Production-Ready Performance** (Last Updated: 2025-08-16)
+✅ **Production-Ready Performance** (Last Updated: 2025-08-17)
 
-Nova Brief has been thoroughly tested and demonstrates excellent performance:
+Nova Brief includes comprehensive evaluation capabilities with both single-model and multi-model comparative analysis.
+
+### Single Model Performance
 
 | Metric | Result | Details |
 |--------|--------|---------|
@@ -44,6 +46,20 @@ Nova Brief has been thoroughly tested and demonstrates excellent performance:
 | **Source Coverage** | 11 sources | Multi-domain research validation |
 | **Citation Coverage** | 75% | Expected topic elements covered |
 | **Pipeline Reliability** | ✅ All components operational | End-to-end functionality verified |
+
+### Multi-Model Comparative Analysis
+
+**🆚 GPT-OSS-120B Routing Comparison** (AI Healthcare Topic):
+
+| Model Configuration | Duration | Words | Sources | Coverage | Characteristics |
+|---------------------|----------|-------|---------|----------|----------------|
+| **GPT-OSS-120B (Default)** | 58.0s | 1,440 | 7 | 50% | Faster, more verbose |
+| **GPT-OSS-120B (Cerebras)** | 78.9s | 1,085 | 23 | 50% | Slower, more thorough |
+
+**Key Insights:**
+- **Default Routing**: 36% faster execution, 33% more verbose output
+- **Cerebras Routing**: 3x more sources, higher research depth
+- **Trade-offs**: Speed vs research thoroughness, verbosity vs source diversity
 
 **Pipeline Performance Breakdown:**
 - 🧠 **Planner**: 4 sub-questions, 7 targeted queries (2s)
@@ -59,10 +75,29 @@ Nova Brief has been thoroughly tested and demonstrates excellent performance:
 - Domain diversity enforcement active
 - Professional formatting with numbered citations
 
-Run your own evaluation:
+### Evaluation Commands
+
+**Single Model Evaluation:**
 ```bash
 uv run python eval/harness.py --quick --max-topics 1
 ```
+
+**Multi-Model Comparison:**
+```bash
+# Default 3-model comparison (GPT-OSS-120B Cerebras vs Default vs Claude Sonnet 4)
+./tools/scripts/run_model_comparison.sh
+
+# Quick 2-model routing comparison
+./tools/scripts/run_model_comparison.sh --set quick --quick --topics 1
+
+# Custom model selection
+uv run python eval/multi_model_harness.py --models gpt-oss-120b-openrouter-cerebras,claude-sonnet-4-openrouter-default
+
+# List all available models
+uv run python eval/multi_model_harness.py --list-models
+```
+
+**For detailed evaluation documentation, see:** [`docs/multi-model-evaluation-testing.md`](docs/multi-model-evaluation-testing.md)
 
 ## Quick Start
 
@@ -125,11 +160,14 @@ uv run python eval/harness.py --quick --max-topics 1
 # Run tests
 uv run python tests/test_mvp.py
 
-# Run evaluation harness
+# Single-model evaluation harness
 uv run python eval/harness.py
-
-# Quick evaluation
 uv run python eval/harness.py --quick --max-topics 3
+
+# Multi-model comparative evaluation
+./tools/scripts/run_model_comparison.sh
+./tools/scripts/run_model_comparison.sh --set quick --quick --topics 2
+uv run python eval/multi_model_harness.py --list-models
 ```
 
 ## Configuration
@@ -165,20 +203,27 @@ MODEL="openai/gpt-oss-120b"
 
 ### Available Models
 
-Nova Brief supports multiple LLM providers and models:
+Nova Brief supports multiple LLM providers and models with flexible routing options:
 
-**OpenRouter Models:**
-- `gpt-oss-120b` - GPT-OSS-120B (Cerebras) - Default, high-speed
-- `gpt-4o` - GPT-4o (OpenAI) - Latest OpenAI model
-- `gpt-4o-mini` - GPT-4o Mini (OpenAI) - Cost-effective option
-- `claude-3.5-sonnet` - Claude 3.5 Sonnet (Anthropic) - Advanced reasoning
-- `claude-3-haiku` - Claude 3 Haiku (Anthropic) - Fast and efficient
+**OpenRouter Models with Routing Options:**
+- `gpt-oss-120b-openrouter-default` - GPT-OSS-120B (OpenRouter Default) - Balanced routing
+- `gpt-oss-120b-openrouter-cerebras` - GPT-OSS-120B (OpenRouter + Cerebras) 🧠 - Hardware-optimized
+- `claude-sonnet-4-openrouter-default` - Claude Sonnet 4 (OpenRouter Default) - Advanced reasoning
+- `gemini-2.5-flash-openrouter-default` - Gemini 2.5 Flash (OpenRouter Default) - Fast processing
+- `gemini-2.5-pro-openrouter-default` - Gemini 2.5 Pro (OpenRouter Default) - Enhanced capabilities
+- `gpt-5-mini-openrouter-default` - GPT-5 Mini (OpenRouter Default) - Cost-effective
+- `qwen3-235b-openrouter-default` - Qwen3-235B (OpenRouter Default) - Large-scale model
+- `kimi-k2-openrouter-default` - Kimi K2 (OpenRouter Default) - Specialized model
 
 **Direct Provider Access:**
-- `gpt-4o-direct` - GPT-4o via OpenAI API directly
-- `claude-3.5-sonnet-direct` - Claude 3.5 Sonnet via Anthropic API directly
+- `claude-sonnet-4-direct` - Claude Sonnet 4 via Anthropic API directly
+- `gemini-2.5-flash-direct` - Gemini 2.5 Flash via Google API directly
+- `gemini-2.5-pro-direct` - Gemini 2.5 Pro via Google API directly
+- `gpt-5-mini-direct` - GPT-5 Mini via OpenAI API directly
 
-Model selection can be configured via environment variables or through the web UI.
+**🧠 Cerebras Hardware Acceleration:** Available for GPT-OSS-120B with specialized routing for enhanced performance.
+
+Model selection can be configured via environment variables, web UI, or multi-model evaluation commands.
 
 ### Advanced Settings
 
@@ -227,8 +272,16 @@ nova-brief/
 │   ├── app.py            # Streamlit UI
 │   └── config.py         # Configuration management
 ├── tests/                 # Test suite
+│   └── test_model_system.py  # Model configuration tests
 ├── eval/                  # Evaluation harness
+│   ├── harness.py        # Single-model evaluation
+│   ├── multi_model_harness.py  # Multi-model comparison
+│   └── topics.json       # Evaluation topics
+├── tools/scripts/         # Utility scripts
+│   ├── run_model_comparison.sh  # Multi-model evaluation wrapper
+│   └── test_*.py         # Development testing scripts
 ├── docs/                  # Documentation
+│   └── multi-model-evaluation-testing.md  # Evaluation guide
 ├── memory-bank/           # Project context and decisions
 ├── pyproject.toml        # Project configuration
 └── .env.example          # Environment template
