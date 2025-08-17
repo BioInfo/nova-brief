@@ -2,8 +2,9 @@
 
 import uuid
 from typing import Dict, List, Any
-from ..providers.openrouter_client import chat
+from ..providers.openrouter_client import LLMClient
 from ..storage.models import Constraints
+from ..config import Config
 from ..observability.logging import get_logger
 from ..observability.tracing import TimedOperation, emit_event
 
@@ -72,40 +73,23 @@ async def plan(
             
             user_prompt += "\nGenerate sub-questions and diverse search queries for comprehensive research."
             
+            # Get selected model
+            selected_model = Config.SELECTED_MODEL
+            
+            # Initialize LLM client with selected model
+            client = LLMClient(model_key=selected_model)
+            
             # Call LLM for planning
             messages = [
                 {"role": "system", "content": PLANNING_SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt}
             ]
             
-            # Use JSON format for structured output
-            from ..providers.openrouter_client import create_json_schema_format
-            
-            json_schema = {
-                "type": "object",
-                "properties": {
-                    "sub_questions": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "minItems": 3,
-                        "maxItems": 5
-                    },
-                    "queries": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "minItems": 5,
-                        "maxItems": 8
-                    }
-                },
-                "required": ["sub_questions", "queries"],
-                "additionalProperties": False
-            }
-            
-            response = await chat(
+            response = await client.chat(
                 messages=messages,
                 temperature=0.3,
                 max_tokens=1000
-                # Note: Removed response_format as it doesn't work with gpt-oss-120b
+                # Note: Removed response_format as it doesn't work with all models
             )
             
             if not response["success"]:

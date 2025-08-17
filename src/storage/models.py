@@ -97,6 +97,7 @@ class ResearchState(TypedDict):
     metrics: Metrics
     current_round: int
     status: str  # planning, searching, reading, analyzing, verifying, writing, complete
+    selected_model: Optional[str]  # Model key for LLM selection
 
 
 class Report(TypedDict):
@@ -157,7 +158,8 @@ def create_initial_state(topic: str, constraints: Optional[Constraints] = None) 
         "final_report": None,
         "metrics": create_default_metrics(),
         "current_round": 0,
-        "status": "planning"
+        "status": "planning",
+        "selected_model": None
     }
 
 

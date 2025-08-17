@@ -201,3 +201,6 @@ tmp/
 
 # UV-specific
 uv.lock
+
+# Repomix aggregated output
+repomix-output.xml

@@ -14,6 +14,7 @@ load_dotenv()
 # Import agent components
 from src.agent.orchestrator import run_research_pipeline, validate_pipeline_inputs
 from src.storage.models import create_default_constraints, Constraints
+from src.config import Config
 from src.observability.logging import get_logger
 
 # Configure logging
@@ -55,12 +56,15 @@ def main():
     with st.sidebar:
         st.header("⚙️ Configuration")
         
+        # Model selection
+        selected_model = _render_model_selection()
+        
         # Research constraints
         constraints = _render_constraints_form()
         
         # API Configuration status
         st.subheader("🔑 API Status")
-        _render_api_status()
+        _render_api_status(selected_model)
         
         # About section
         st.subheader("ℹ️ About")
@@ -104,7 +108,7 @@ def main():
                 type="primary"
             ):
                 if topic and not st.session_state.research_running:
-                    _run_research(topic, constraints)
+                    _run_research(topic, constraints, selected_model)
         
         with col_btn2:
             if st.session_state.research_running:
@@ -139,6 +143,113 @@ def _check_environment() -> bool:
         return False
     
     return True
+
+
+def _render_model_selection() -> str:
+    """Render enhanced model selection UI component."""
+    st.subheader("🤖 Model Selection")
+    
+    # Get available models and organize by base model
+    available_models_dict = Config.get_available_models_dict()
+    current_selection = Config.SELECTED_MODEL
+    
+    # Organize models by base model for better UI
+    model_groups = {}
+    for base_model_key in Config.BASE_MODELS.keys():
+        base_config = Config.BASE_MODELS[base_model_key]
+        model_groups[base_model_key] = {
+            'name': base_config['name'],
+            'variants': Config.get_models_by_base_model(base_model_key),
+            'supports_cerebras': base_config['supports_cerebras']
+        }
+    
+    # Create organized display options
+    model_options = {}
+    option_groups = []
+    
+    for base_key, group_info in model_groups.items():
+        group_name = f"📱 {group_info['name']}"
+        if group_info['supports_cerebras']:
+            group_name += " 🧠"
+        
+        option_groups.append(f"--- {group_name} ---")
+        model_options[f"--- {group_name} ---"] = None  # Separator
+        
+        for variant_key, model_config in group_info['variants'].items():
+            # Add API key status indicator
+            api_key = os.getenv(model_config.api_key_env)
+            status = "✅" if api_key else "❌"
+            
+            # Create descriptive display name
+            provider_info = model_config.provider.title()
+            if model_config.provider_params:
+                if "cerebras" in str(model_config.provider_params):
+                    provider_info += " + Cerebras 🧠"
+                else:
+                    provider_info += f" + {model_config.provider_params}"
+            elif model_config.provider == "openrouter":
+                provider_info += " (Default)"
+            else:
+                provider_info = f"Direct {provider_info}"
+            
+            display_name = f"{status} {group_info['name']} ({provider_info})"
+            model_options[display_name] = variant_key
+    
+    # Find current selection index
+    current_index = 0
+    try:
+        current_display = next(k for k, v in model_options.items() if v == current_selection)
+        current_index = list(model_options.keys()).index(current_display)
+    except (StopIteration, ValueError):
+        # Fallback to first non-separator option
+        for i, (display, key) in enumerate(model_options.items()):
+            if key is not None:
+                current_index = i
+                break
+    
+    # Selection widget with organized options
+    selected_display = st.selectbox(
+        "Choose Model Configuration:",
+        options=list(model_options.keys()),
+        index=current_index,
+        help="Select model, provider, and inference method",
+        format_func=lambda x: x if not x.startswith("---") else x  # Keep separator formatting
+    )
+    
+    selected_model = model_options[selected_display]
+    
+    # Handle separator selection (shouldn't happen but be safe)
+    if selected_model is None:
+        # Find next valid option
+        for display, key in model_options.items():
+            if key is not None:
+                selected_model = key
+                break
+    
+    # Update session state if changed
+    if 'selected_model' not in st.session_state:
+        st.session_state.selected_model = selected_model
+    elif st.session_state.selected_model != selected_model:
+        st.session_state.selected_model = selected_model
+        st.rerun()  # Refresh to update API status
+    
+    # Show selection breakdown
+    if selected_model and selected_model in available_models_dict:
+        model_config = available_models_dict[selected_model]
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.caption(f"🤖 **Model:** {model_config.model_id}")
+            st.caption(f"🏢 **Provider:** {model_config.provider.title()}")
+        with col2:
+            if model_config.provider_params:
+                st.caption(f"⚙️ **Inference:** {model_config.provider_params}")
+            else:
+                st.caption(f"⚙️ **Inference:** Default routing")
+            if model_config.supports_cerebras:
+                st.caption("🧠 **Cerebras:** Available")
+    
+    return selected_model
 
 
 def _render_constraints_form() -> Constraints:
@@ -210,21 +321,51 @@ def _render_constraints_form() -> Constraints:
     return constraints
 
 
-def _render_api_status():
-    """Render API configuration status."""
-    openrouter_key = os.getenv("OPENROUTER_API_KEY")
+def _render_api_status(selected_model: str):
+    """Render enhanced API configuration status for the selected model."""
+    available_models = Config.get_available_models_dict()
+    model_config = available_models.get(selected_model)
     
-    if openrouter_key:
-        st.success("✅ OpenRouter API Key")
+    if not model_config:
+        st.error("❌ Invalid model configuration")
+        return
+    
+    # API Key Status
+    api_key = os.getenv(model_config.api_key_env)
+    
+    if api_key:
+        st.success(f"✅ {model_config.api_key_env}")
         # Show partial key for verification
-        masked_key = f"{openrouter_key[:8]}...{openrouter_key[-4:]}"
+        masked_key = f"{api_key[:8]}...{api_key[-4:]}"
         st.code(masked_key)
     else:
-        st.error("❌ OpenRouter API Key Missing")
+        st.error(f"❌ {model_config.api_key_env} Missing")
+        st.warning(f"Set {model_config.api_key_env} in your .env file")
+        
+        # Show required API key information
+        if model_config.provider == "google":
+            st.info("💡 Get Google AI API key: https://aistudio.google.com/app/apikey")
+        elif model_config.provider == "anthropic":
+            st.info("💡 Get Anthropic API key: https://console.anthropic.com/")
+        elif model_config.provider == "openai":
+            st.info("💡 Get OpenAI API key: https://platform.openai.com/api-keys")
+        elif model_config.provider == "openrouter":
+            st.info("💡 Get OpenRouter API key: https://openrouter.ai/keys")
     
-    # Show model configuration
-    model = os.getenv("MODEL", "openai/gpt-oss-120b")
-    st.info(f"🤖 Model: {model}")
+    # Configuration Details
+    st.info(f"🤖 Model: {model_config.model_id}")
+    st.info(f"🏢 Provider: {model_config.provider.title()}")
+    
+    if model_config.provider_params:
+        st.info(f"⚙️ Inference: {model_config.provider_params}")
+    else:
+        st.info(f"⚙️ Inference: Default routing")
+    
+    if model_config.base_url:
+        st.info(f"🔗 Base URL: {model_config.base_url}")
+    
+    if model_config.supports_cerebras:
+        st.info("🧠 Cerebras inference supported")
 
 
 def _render_status_panel():
@@ -261,10 +402,13 @@ def _render_status_panel():
         st.info("⏳ Ready for Research")
 
 
-def _run_research(topic: str, constraints: Constraints):
+def _run_research(topic: str, constraints: Constraints, selected_model: str):
     """Execute research pipeline asynchronously."""
     st.session_state.research_running = True
     st.session_state.research_logs = []
+    
+    # Set the selected model in config for this session
+    Config.SELECTED_MODEL = selected_model
     
     # Create progress indicators
     progress_container = st.container()
@@ -278,7 +422,7 @@ def _run_research(topic: str, constraints: Constraints):
         # Run research pipeline
         with st.spinner("Conducting research..."):
             # Since Streamlit doesn't handle async well, we'll use asyncio.run
-            results = asyncio.run(run_research_pipeline(topic, constraints))
+            results = asyncio.run(run_research_pipeline(topic, constraints, selected_model))
         
         # Store results
         st.session_state.research_results = results

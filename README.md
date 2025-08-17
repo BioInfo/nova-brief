@@ -12,10 +12,11 @@ A fast, reliable deep-research agent that plans, searches, reads, verifies, and 
 - **Verifier**: Citation validation and coverage enforcement
 - **Writer**: Professional report generation with numbered citations
 
-🤖 **OpenRouter Integration**
-- Uses OpenRouter API with Cerebras provider pinning
-- Model: `openai/gpt-oss-120b` for high-performance research
-- Structured JSON outputs via JSON Schema validation
+🤖 **Configurable LLM Providers**
+- Multiple model/provider support via OpenRouter and direct APIs
+- Default: `openai/gpt-oss-120b` (Cerebras) for high-performance research
+- Alternative models: GPT-4o, Claude 3.5 Sonnet, GPT-4o Mini, and more
+- UI-based model selection with real-time API key validation
 
 📊 **Professional Output**
 - 800-1200 word reports with proper citations
@@ -136,20 +137,48 @@ uv run python eval/harness.py --quick --max-topics 3
 Configure Nova Brief via environment variables in `.env`:
 
 ```bash
-# Required
-OPENROUTER_API_KEY=your_api_key_here
+# Model Selection (choose one of the available models)
+SELECTED_MODEL=gpt-oss-120b
 
-# Optional (with defaults)
+# OpenRouter Configuration (for most models)
+OPENROUTER_API_KEY=your_openrouter_key_here
 OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-MODEL="openai/gpt-oss-120b"
+
+# Direct Provider API Keys (optional, for direct access)
+OPENAI_API_KEY=your_openai_key_here
+ANTHROPIC_API_KEY=your_anthropic_key_here
+
+# Search and Agent Settings
 SEARCH_PROVIDER=duckduckgo
 MAX_ROUNDS=3
 PER_DOMAIN_CAP=3
 FETCH_TIMEOUT_S=15
+
+# System Configuration
 ENABLE_CACHE=false
 LOG_LEVEL=INFO
 USER_AGENT=NovaBrief-Research/0.1
+
+# Legacy Configuration (maintained for backward compatibility)
+MODEL="openai/gpt-oss-120b"
 ```
+
+### Available Models
+
+Nova Brief supports multiple LLM providers and models:
+
+**OpenRouter Models:**
+- `gpt-oss-120b` - GPT-OSS-120B (Cerebras) - Default, high-speed
+- `gpt-4o` - GPT-4o (OpenAI) - Latest OpenAI model
+- `gpt-4o-mini` - GPT-4o Mini (OpenAI) - Cost-effective option
+- `claude-3.5-sonnet` - Claude 3.5 Sonnet (Anthropic) - Advanced reasoning
+- `claude-3-haiku` - Claude 3 Haiku (Anthropic) - Fast and efficient
+
+**Direct Provider Access:**
+- `gpt-4o-direct` - GPT-4o via OpenAI API directly
+- `claude-3.5-sonnet-direct` - Claude 3.5 Sonnet via Anthropic API directly
+
+Model selection can be configured via environment variables or through the web UI.
 
 ### Advanced Settings
 
@@ -162,13 +191,13 @@ USER_AGENT=NovaBrief-Research/0.1
 
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Streamlit UI  │    │  Agent Pipeline │    │  OpenRouter API │
+│   Streamlit UI  │    │  Agent Pipeline │    │  LLM Providers  │
 │                 │───▶│                 │───▶│                 │
-│ • Topic Input   │    │ • Planner       │    │ • Cerebras      │
-│ • Configuration │    │ • Searcher      │    │ • GPT-OSS-120B  │
-│ • Progress      │    │ • Reader        │    │ • JSON Schema   │
-│ • Results       │    │ • Analyst       │    │                 │
-│                 │    │ • Verifier      │    │                 │
+│ • Topic Input   │    │ • Planner       │    │ • OpenRouter    │
+│ • Model Select  │    │ • Searcher      │    │ • OpenAI Direct │
+│ • Configuration │    │ • Reader        │    │ • Anthropic     │
+│ • Progress      │    │ • Analyst       │    │ • Cerebras      │
+│ • Results       │    │ • Verifier      │    │ • Multi-Model   │
 │                 │    │ • Writer        │    │                 │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
                                 │
@@ -260,9 +289,12 @@ async def component_function(inputs) -> Dict[str, Any]:
 
 ### Common Issues
 
-**"OpenRouter API key required"**
-- Ensure `OPENROUTER_API_KEY` is set in your `.env` file
-- Verify the API key is valid at [openrouter.ai](https://openrouter.ai)
+**"API key required"**
+- Ensure the appropriate API key is set for your selected model
+- For OpenRouter models: Set `OPENROUTER_API_KEY`
+- For direct OpenAI: Set `OPENAI_API_KEY`
+- For direct Anthropic: Set `ANTHROPIC_API_KEY`
+- Verify API keys are valid at respective provider websites
 
 **"No search results found"**
 - Check internet connectivity
@@ -338,4 +370,4 @@ For questions and support:
 
 ---
 
-**Built with**: Python 3.9+, Streamlit, OpenRouter, Cerebras, DuckDuckGo
+**Built with**: Python 3.9+, Streamlit, OpenRouter, OpenAI, Anthropic, Cerebras, DuckDuckGo

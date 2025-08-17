@@ -16,6 +16,7 @@ logger = get_logger(__name__)
 async def run_research_pipeline(
     topic: str,
     constraints: Optional[Constraints] = None,
+    selected_model: Optional[str] = None,
     max_rounds: int = 3
 ) -> Dict[str, Any]:
     """
@@ -24,6 +25,7 @@ async def run_research_pipeline(
     Args:
         topic: Research topic to investigate
         constraints: Research constraints and configuration
+        selected_model: Model key for LLM selection
         max_rounds: Maximum rounds of iterative refinement
     
     Returns:
@@ -40,8 +42,16 @@ async def run_research_pipeline(
             
             state = create_initial_state(topic, constraints)
             
+            # Add model selection to state
+            if selected_model:
+                state["selected_model"] = selected_model
+            
             logger.info(f"Starting research pipeline for topic: {topic}")
-            emit_event("pipeline_started", metadata={"topic": topic, "max_rounds": max_rounds})
+            emit_event("pipeline_started", metadata={
+                "topic": topic,
+                "max_rounds": max_rounds,
+                "selected_model": selected_model
+            })
             
             # Execute pipeline stages
             pipeline_result = await _execute_pipeline_stages(state)
