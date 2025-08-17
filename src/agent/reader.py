@@ -4,7 +4,8 @@ import asyncio
 from typing import Dict, List, Any, Optional
 from ..tools.fetch_url import run as fetch_url_run
 from ..tools.parse_pdf import run as parse_pdf_run
-from ..storage.models import SearchResult, Document, Chunk, Constraints, create_chunks_from_document
+from ..tools.content_quality import validate_content, get_content_summary
+from ..storage.models import SearchResult, Document, Chunk, Constraints, ResearchState, create_chunks_from_document
 from ..observability.logging import get_logger
 from ..observability.tracing import TimedOperation, emit_event
 
@@ -13,7 +14,8 @@ logger = get_logger(__name__)
 
 async def read(
     search_results: List[SearchResult],
-    constraints: Constraints
+    constraints: Constraints,
+    state: Optional[ResearchState] = None
 ) -> Dict[str, Any]:
     """
     Fetch URLs and process content into documents and chunks.
@@ -21,9 +23,10 @@ async def read(
     Args:
         search_results: List of search results to fetch and process
         constraints: Research constraints including timeouts
+        state: Research state to update with partial failures
     
     Returns:
-        Dictionary with success status, documents, chunks, and metadata
+        Dictionary with success status, documents, chunks, metadata, and partial_failures
     """
     with TimedOperation("agent_reader") as timer:
         try:
@@ -50,6 +53,8 @@ async def read(
             # Process each fetch result
             successful_fetches = 0
             failed_fetches = 0
+            quality_gate_failures = 0
+            partial_failures = []
             
             for i, fetch_result in enumerate(fetch_results):
                 try:
@@ -57,16 +62,33 @@ async def read(
                     url = urls[i]
                     
                     if not fetch_result["success"]:
-                        logger.warning(f"Failed to fetch {url}: {fetch_result.get('error')}")
+                        error_msg = fetch_result.get('error', 'Unknown fetch error')
+                        logger.warning(f"Failed to fetch {url}: {error_msg}")
                         failed_fetches += 1
+                        # Record as partial failure
+                        partial_failures.append({
+                            "source": url,
+                            "error": f"Fetch failed: {error_msg}"
+                        })
                         continue
                     
-                    # Create document from fetch result
-                    document = _create_document_from_fetch_result(fetch_result, search_result)
-                    if not document:
+                    # Create document from fetch result (includes quality gate)
+                    document_result = _create_document_from_fetch_result_with_quality_gate(
+                        fetch_result, search_result
+                    )
+                    
+                    if not document_result["success"]:
                         failed_fetches += 1
+                        # Record quality gate or other failures
+                        partial_failures.append({
+                            "source": url,
+                            "error": document_result["error"]
+                        })
+                        if "quality gate" in document_result["error"].lower():
+                            quality_gate_failures += 1
                         continue
                     
+                    document = document_result["document"]
                     documents.append(document)
                     successful_fetches += 1
                     
@@ -79,6 +101,10 @@ async def read(
                 except Exception as e:
                     logger.error(f"Error processing result for {urls[i]}: {e}")
                     failed_fetches += 1
+                    partial_failures.append({
+                        "source": urls[i],
+                        "error": f"Processing error: {str(e)}"
+                    })
                     continue
             
             # Calculate metrics
@@ -100,17 +126,24 @@ async def read(
                 "urls_requested": len(urls),
                 "successful_fetches": successful_fetches,
                 "failed_fetches": failed_fetches,
+                "quality_gate_failures": quality_gate_failures,
                 "documents_created": len(documents),
                 "chunks_created": total_chunks,
                 "total_text_length": total_text_length,
                 "avg_chunk_size": int(avg_chunk_size),
                 "domain_diversity": len(domains),
-                "fetch_timeout": fetch_timeout
+                "fetch_timeout": fetch_timeout,
+                "partial_failures_count": len(partial_failures)
             }
+            
+            # Update state with partial failures if provided
+            if state and partial_failures:
+                state["partial_failures"].extend(partial_failures)
             
             logger.info(
                 f"Reading completed: {successful_fetches}/{len(urls)} URLs, "
-                f"{len(documents)} documents, {total_chunks} chunks",
+                f"{len(documents)} documents, {total_chunks} chunks, "
+                f"{quality_gate_failures} quality gate failures",
                 extra=metadata
             )
             
@@ -123,7 +156,8 @@ async def read(
                 "success": True,
                 "documents": documents,
                 "chunks": chunks,
-                "metadata": metadata
+                "metadata": metadata,
+                "partial_failures": partial_failures
             }
             
         except Exception as e:
@@ -174,11 +208,11 @@ async def _fetch_urls_concurrent(urls: List[str], timeout: float, max_concurrent
     return processed_results
 
 
-def _create_document_from_fetch_result(
+def _create_document_from_fetch_result_with_quality_gate(
     fetch_result: Dict[str, Any],
     search_result: SearchResult
-) -> Optional[Document]:
-    """Create a Document from fetch result and search result."""
+) -> Dict[str, Any]:
+    """Create a Document from fetch result and search result with quality gate validation."""
     try:
         url = fetch_result["url"]
         content_type = fetch_result.get("content_type", "text/html")
@@ -196,7 +230,11 @@ def _create_document_from_fetch_result(
                     title = pdf_result.get("metadata", {}).get("title", "") or search_result["title"]
                 else:
                     logger.warning(f"Failed to parse PDF content from {url}")
-                    return None
+                    return {
+                        "success": False,
+                        "error": "Failed to parse PDF content",
+                        "document": None
+                    }
             else:
                 text = fetch_result.get("text", "")
                 title = fetch_result.get("title", "") or search_result["title"]
@@ -205,10 +243,17 @@ def _create_document_from_fetch_result(
             text = fetch_result.get("text", "")
             title = fetch_result.get("title", "") or search_result["title"]
         
-        # Validate content
-        if not text or len(text.strip()) < 50:
-            logger.warning(f"Insufficient content from {url}: {len(text)} chars")
-            return None
+        # Apply Content Quality Gate (Stage 1.5)
+        quality_validation = validate_content(text)
+        if not quality_validation["ok"]:
+            reason = quality_validation["reason"]
+            metrics_summary = get_content_summary(text)
+            logger.warning(f"Content Quality Gate failed for {url}: {reason} ({metrics_summary})")
+            return {
+                "success": False,
+                "error": f"Quality gate failed: {reason}",
+                "document": None
+            }
         
         # Extract domain for metadata
         try:
@@ -231,15 +276,24 @@ def _create_document_from_fetch_result(
                 "path": path,
                 "snippet": search_result["snippet"],
                 "content_length": len(text),
-                "fetch_metadata": fetch_result.get("metadata", {})
+                "fetch_metadata": fetch_result.get("metadata", {}),
+                "quality_metrics": quality_validation["metrics"]
             }
         }
         
-        return document
+        return {
+            "success": True,
+            "document": document,
+            "error": None
+        }
         
     except Exception as e:
         logger.error(f"Error creating document from fetch result: {e}")
-        return None
+        return {
+            "success": False,
+            "error": f"Document creation error: {str(e)}",
+            "document": None
+        }
 
 
 def _detect_content_language(text: str) -> str:

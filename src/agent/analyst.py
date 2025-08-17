@@ -284,13 +284,13 @@ Extract specific claims from this content, focusing on verifiable facts, estimat
                 "sections": []
             }
         
-        # Parse LLM response with robust JSON extraction
+        # Parse LLM response with robust JSON extraction and repair
         try:
             content = response.get("content", "")
             if not content:
                 raise ValueError("Empty response content")
             
-            # Try to extract JSON from response (handle cases where model adds extra text)
+            # Try to extract and repair JSON from response
             json_content = content.strip()
             
             # Look for JSON object boundaries if there's extra text
@@ -303,13 +303,33 @@ Extract specific claims from this content, focusing on verifiable facts, estimat
                 else:
                     raise ValueError("No JSON object found in response")
             
-            analysis_result = json.loads(json_content)
+            # First attempt: parse as-is
+            try:
+                analysis_result = json.loads(json_content)
+            except json.JSONDecodeError as e:
+                # Second attempt: try to repair common JSON issues
+                logger.warning(f"Initial JSON parse failed, attempting repair: {e}")
+                json_content = _repair_json(json_content)
+                analysis_result = json.loads(json_content)
+            
             raw_claims = analysis_result.get("claims", [])
             sections = analysis_result.get("sections", [])
             
         except (json.JSONDecodeError, ValueError) as e:
             logger.error(f"Failed to parse analysis response: {e}")
             logger.error(f"Raw content: {content[:500]}...")
+            
+            # Fallback: try to extract individual claims using regex
+            fallback_result = _extract_claims_fallback(content, doc_urls)
+            if fallback_result["claims"]:
+                logger.info(f"Fallback extraction recovered {len(fallback_result['claims'])} claims")
+                return {
+                    "success": True,
+                    "claims": fallback_result["claims"],
+                    "citations": fallback_result["citations"],
+                    "sections": ["Analysis Results", "Key Findings"]
+                }
+            
             return {
                 "success": False,
                 "error": f"Response parsing failed: {str(e)}",
@@ -464,3 +484,90 @@ def _create_draft_sections(claims: List[Claim], sections: List[str], topic: str)
             unique_sections.append(section)
     
     return unique_sections[:6]  # Limit to 6 sections
+
+
+def _repair_json(json_content: str) -> str:
+    """Attempt to repair common JSON formatting issues."""
+    import re
+    
+    # Remove any trailing commas before closing brackets/braces
+    json_content = re.sub(r',\s*([}\]])', r'\1', json_content)
+    
+    # Ensure proper quotes around unquoted keys
+    json_content = re.sub(r'(\w+):\s*(["\'{])', r'"\1": \2', json_content)
+    
+    # Fix missing commas between objects in arrays
+    json_content = re.sub(r'}\s*{', r'}, {', json_content)
+    
+    # Fix missing commas between properties
+    json_content = re.sub(r'"\s*\n\s*"', r'",\n  "', json_content)
+    
+    # Ensure the JSON ends properly
+    if not json_content.rstrip().endswith('}'):
+        # Try to close any unclosed objects/arrays
+        open_braces = json_content.count('{') - json_content.count('}')
+        open_brackets = json_content.count('[') - json_content.count(']')
+        
+        for _ in range(open_brackets):
+            json_content += ']'
+        for _ in range(open_braces):
+            json_content += '}'
+    
+    return json_content
+
+
+def _extract_claims_fallback(content: str, doc_urls: List[str]) -> Dict[str, Any]:
+    """Fallback method to extract claims using regex when JSON parsing fails."""
+    import re
+    
+    claims = []
+    citations = []
+    
+    try:
+        # Look for claim-like patterns in the text
+        claim_pattern = r'"text":\s*"([^"]+)".*?"type":\s*"(fact|estimate|opinion)".*?"confidence":\s*([0-9.]+)'
+        
+        for match in re.finditer(claim_pattern, content, re.DOTALL | re.IGNORECASE):
+            text = match.group(1)
+            claim_type = match.group(2).lower()
+            confidence = float(match.group(3))
+            
+            # Extract URLs mentioned near this claim
+            claim_start = max(0, match.start() - 200)
+            claim_end = min(len(content), match.end() + 200)
+            claim_context = content[claim_start:claim_end]
+            
+            # Find URLs in the context
+            url_pattern = r'https?://[^\s"\]]+|www\.[^\s"\]]+'
+            found_urls = re.findall(url_pattern, claim_context)
+            
+            # Filter to only URLs from our document set
+            valid_urls = [url for url in found_urls if any(doc_url in url for doc_url in doc_urls)]
+            if not valid_urls:
+                valid_urls = doc_urls[:1]  # Default to first document if no specific URL found
+            
+            claim_id = str(uuid.uuid4())[:8]
+            
+            claim: Claim = {
+                "id": claim_id,
+                "text": text,
+                "type": claim_type,
+                "confidence": confidence,
+                "source_urls": valid_urls
+            }
+            claims.append(claim)
+            
+            citation: Citation = {
+                "claim_id": claim_id,
+                "urls": valid_urls,
+                "citation_number": None
+            }
+            citations.append(citation)
+            
+    except Exception as e:
+        logger.warning(f"Fallback extraction failed: {e}")
+    
+    return {
+        "claims": claims,
+        "citations": citations
+    }

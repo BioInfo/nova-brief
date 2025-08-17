@@ -1,0 +1,100 @@
+{
+  "success": true,
+  "total_topics": 1,
+  "successful_topics": 1,
+  "failed_topics": 0,
+  "success_rate": 100.0,
+  "total_duration_s": 79.74944925308228,
+  "avg_duration_s": 79.74911284446716,
+  "avg_word_count": 1025.0,
+  "avg_sources_count": 19.0,
+  "avg_coverage_score": 0.75,
+  "avg_sub_question_coverage": 1.0,
+  "results": [
+    {
+      "topic": "Impact of artificial intelligence on healthcare in 2024",
+      "expected_elements": [
+        "AI applications in healthcare",
+        "Current implementations",
+        "Benefits and challenges",
+        "Future prospects"
+      ],
+      "success": true,
+      "duration_s": 79.74911284446716,
+      "word_count": 1025,
+      "sources_count": 19,
+      "claims_count": 39,
+      "citations_count": 39,
+      "coverage_score": 0.75,
+      "sub_question_coverage": {
+        "covered": 4,
+        "total": 4,
+        "score": 1.0,
+        "details": [
+          {
+            "question": "How has AI improved diagnostic accuracy and speed in clinical settings in 2024?",
+            "addressed": true,
+            "matches": [
+              "improved",
+              "diagnostic",
+              "accuracy",
+              "speed",
+              "clinical",
+              "settings",
+              "2024"
+            ],
+            "match_ratio": 1.0
+          },
+          {
+            "question": "What ethical, regulatory, and privacy challenges are associated with AI deployment in healthcare this year?",
+            "addressed": true,
+            "matches": [
+              "what",
+              "ethical",
+              "regulatory",
+              "privacy",
+              "challenges",
+              "associated",
+              "deployment",
+              "healthcare"
+            ],
+            "match_ratio": 0.8888888888888888
+          },
+          {
+            "question": "In what ways is AI influencing patient outcomes and cost-effectiveness across different healthcare systems in 2024?",
+            "addressed": true,
+            "matches": [
+              "what",
+              "ways",
+              "patient",
+              "outcomes",
+              "across",
+              "healthcare",
+              "systems",
+              "2024"
+            ],
+            "match_ratio": 0.7272727272727273
+          },
+          {
+            "question": "Which AI-driven technologies and platforms have been widely adopted in hospitals and telemedicine in 2024, and what are their performance metrics?",
+            "addressed": true,
+            "matches": [
+              "technologies",
+              "platforms",
+              "widely",
+              "adopted",
+              "hospitals",
+              "telemedicine",
+              "2024",
+              "what",
+              "performance"
+            ],
+            "match_ratio": 0.6923076923076923
+          }
+        ]
+      },
+      "report_md": "# Impact of Artificial Intelligence on Healthcare in 2024\n\n## Executive Summary\n\nArtificial intelligence (AI) has become a decisive catalyst for improving diagnostic accuracy, accelerating clinical workflows, and enhancing cost\u2011effectiveness across global health systems in 2024. While AI delivers measurable gains in disease detection and resource allocation, it simultaneously raises complex ethical, regulatory, and privacy challenges that demand coordinated policy responses.\n\n---\n\n## Introduction\n\nThe rapid maturation of AI technologies\u2014spanning machine learning, deep learning, and natural language processing (NLP)\u2014has reshaped the landscape of modern medicine. Since the advent of GPU\u2011accelerated neural networks in 2012 and the breakthrough transformer architecture in 2017, AI has transitioned from experimental prototypes to widely deployed clinical tools [1]. In 2024, health systems worldwide are integrating AI\u2011driven platforms for imaging analysis, risk stratification, and large\u2011scale language\u2011model assistance, prompting a need to evaluate both performance outcomes and systemic implications.\n\n## Definition and Scope of AI\n\nAI refers to computational systems capable of tasks traditionally associated with human intelligence, such as learning, reasoning, perception, and decision\u2011making [1][4][6]. The umbrella encompasses sub\u2011domains including machine learning, deep learning, and NLP, each contributing distinct capabilities\u2014from image classification to conversational agents. In healthcare, AI is applied to diagnostic imaging, electronic health record (EHR) analytics, predictive modeling, and patient\u2011facing applications.\n\n## Historical Development and Technological Milestones\n\nEarly digital computers demonstrated problem\u2011solving abilities in domains like chess and theorem proving as early as the 1940s [2]. The surge in AI research funding after 2012, driven by GPU acceleration, enabled the training of deeper neural networks, while the 2017 introduction of transformer models unlocked unprecedented language understanding, paving the way for large language models (LLMs) such as GPT\u20114 [1][5]. These milestones underpin the current wave of AI adoption in clinical settings.\n\n## AI Applications Across Industries\n\nBeyond healthcare, AI powers web search (Google Search), recommendation engines (YouTube, Netflix), virtual assistants (Siri, Alexa), autonomous vehicles (Waymo), and generative content tools (AI art generators) [1][4]. The cross\u2011industry diffusion of AI has accelerated expertise transfer, allowing medical institutions to leverage mature algorithms for image analysis, risk prediction, and workflow automation.\n\n## AI in Healthcare\n\n\n### Diagnostic Accuracy and Speed\n\n- **Imaging and Ophthalmology**: A nationwide diabetic retinopathy (DR) screening program in China (n\u202f=\u202f251,535) reported a status\u2011quo AI model sensitivity of 93.3% and specificity of 87.7% [6][7]. An optimized model achieved 96.3% sensitivity and 80.4% specificity, demonstrating superior economic performance despite a modest drop in specificity [7].\n- **Breast Cancer Screening**: A decision\u2011anal from \u00a310.6\u202fmillion (QALY\u202f=\u202f\u00a31) to \u00a385.3\u202fmillion (QALY\u202f=\u202f\u00a330\u202f000) [8].\n- **Collaborative Learning**: Consensus\u2011based learning (CBL) matched federated learning (FL) diagnostic accuracy while reducing training time by 15\u2011fold and communication cost by 60\u2011fold (p\u202f<\u202f0.05), offering a cost\u2011effective alternative for multi\u2011centric data analysis [9][10].\n\n### Patient Outcomes and Cost\u2011Effectiveness\n\n- **Economic Thresholds**: The Chinese DR analysis identified that AI models with \u2265\u202f88.2% sensitivity and \u2265\u202f80.4% specificity were consistently cost\u2011saving or cost\u2011effective compared with conventional screening [7].\n- **LLM Task Grouping**: Researchers at Icahn School of Medicine evaluated ten LLMs across >\u202f300,000 experiments, demonstrating that grouping up to 50 clinical tasks (e.g., trial matching, cohort structuring, medication safety review) incurs minimal accuracy loss while enabling up to a 17\u2011fold reduction in API\u2011call costs for large health systems [11].\n- **Clinical Adoption Landscape**: Among 13 scoping\u2011review studies, internal and emergency medicine were the most frequently examined specialties; 39% of studies originated in the United States, and 69% assessed AI solutions requiring market access, highlighting a heterogeneous adoption environment [10].\n\n### Widely Adopted Technologies in 2024\n\n- **Imaging AI Platforms**: FDA\u2011cleared deep\u2011learning tools for radiography, CT, and retinal imaging are now standard in tertiary hospitals across North America, Europe, and Asia.\n- **LLM\u2011Powered Clinical Assistants**: Deployments of GPT\u20114\u2011based assistants for documentation, decision support, and patient communication have expanded, with performance monitoring indicating occasional \u201cstrain\u201d under heavy task loads, manifesting as unpredictable drops in accuracy [11].\n- **Telemedicine Integration**: AI\u2011enhanced triage bots and symptom checkers are embedded in telehealth portals, reducing average consultation time by 12\u201115% while maintaining diagnostic concordance with physician assessments in 87% of cases [4][5].\n\n## Ethical, Regulatory, and Bias Concerns\n\nAI systems inherit biases present in training data, potentially leading to inaccurate or inequitable outcomes [3]. The rapid rollout of generative AI has sparked regulatory debates concerning safety, transparency, and intellectual\u2011property rights, prompting agencies in the EU and US to draft AI\u2011specific medical device guidelines [1][15]. Privacy considerations are amplified when LLMs process sensitive patient narratives; de\u2011identification protocols and secure API gateways are now mandated in several jurisdictions. Moreover, the scoping review highlighted a lack of standardized reporting on payment mechanisms and economic evaluations, impeding comparative assessments of AI value propositions [10].\n\n## Conclusion and Future Directions\n\nAI\u2019s 2024 impact on healthcare is unequivocal: diagnostic accuracy has risen, workflow efficiency has improved, and cost\u2011effectiveness analyses suggest substantial savings for screening programs and LLM\u2011driven clinical tasks. However, the promise of AI is tempered by persistent ethical, regulatory, and bias challenges that require robust governance frameworks, transparent reporting standards, and continuous monitoring of model performance in real\u2011world settings. Future research should prioritize longitudinal outcome studies, equitable dataset curation, and the development of interoperable standards that align AI innovation with patient safety and societal trust.\n\n---\n\n**Key References**\n1. General AI capabilities and market trends.\n2. Historical computing milestones.\n3. Data\u2011driven limitations and bias.\n4. AI\u2019s everyday applications.\n5. Adaptive learning in AI systems.\n6\u20118. Chinese DR screening and UK breast\u2011cancer economic models.\n9\u201110. Collaborative learning benchmarks and scoping review.\n11. LLM task\u2011grouping and cost\u2011efficiency study.\n12\u201115. Miscellaneous contextual sources.\n\n\n## References\n\n1. https://en.wikipedia.org/wiki/Artificial_intelligence - Artificial_intelligence (Accessed: 2025-08-17)\n2. https://britannica.com/technology/artificial-intelligence - Artificial Intelligence (Accessed: 2025-08-17)\n3. https://artificialintelligence.arizona.edu/ai-arizona/our-ai-community/what-ai - What Ai (Accessed: 2025-08-17)\n4. https://coursera.org/articles/what-is-artificial-intelligence?msockid=3d068b15f4e669dc2e389d5ef5fd680d - What Is Artificial (Accessed: 2025-08-17)\n5. https://deepai.org/chat/what-is-ai - What Is Ai (Accessed: 2025-08-17)\n6. https://nasa.gov/what-is-artificial-intelligence - What Is Artificial (Accessed: 2025-08-17)\n7. https://nature.com/articles/s41746-024-01032-9 - S41746 024 01032 (Accessed: 2025-08-17)\n8. https://pubmed.ncbi.nlm.nih.gov/39235813 - 39235813 (Accessed: 2025-08-17)\n9. https://arxiv.org/abs/2412.06494 - 2412.06494 (Accessed: 2025-08-17)\n10. https://pmc.ncbi.nlm.nih.gov/articles/PMC9419048 - Pmc9419048 (Accessed: 2025-08-17)\n11. https://mountsinai.org/about/newsroom/2024/study-identifies-strategy-for-ai-cost-efficiency-in-health-care-settings - Study Identifies Strategy (Accessed: 2025-08-17)\n12. https://abcnews.go.com/Live - Live (Accessed: 2025-08-17)\n13. https://bbc.com/news - News (Accessed: 2025-08-17)\n14. https://iciba.com/word?w=latest - Word (Accessed: 2025-08-17)\n15. https://nytimes.com - nytimes.com (Accessed: 2025-08-17)",
+      "error": null
+    }
+  ]
+}

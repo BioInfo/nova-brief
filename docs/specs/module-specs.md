@@ -105,7 +105,7 @@ Integration notes:
 ## 4) Reader
 
 Responsibility:
-- Fetch pages, extract main content for HTML, parse PDF, capture metadata, and chunk into token-bounded segments.
+- Fetch pages, extract main content for HTML, parse PDF, capture metadata, apply a Content Quality Gate, and chunk into token-bounded segments.
 
 Inputs:
 - urls: string[]
@@ -122,10 +122,16 @@ Rules:
 - HTML extraction: main content only; strip boilerplate, nav, ads.
 - PDF parsing: text extraction; preserve page breaks minimally.
 - Chunking: target token size T (e.g., 800–1200) with overlap O (e.g., 50–100).
+- Content Quality Gate (Stage 1.5):
+  - Minimum word count > 100
+  - Reasonable unique-word ratio (e.g., unique/total ≥ 0.25)
+  - Reject if text contains boilerplate/error phrases (case-insensitive):
+    ["enable javascript", "access denied", "forbidden", "captcha", "page not found"]
+  - Discard failing documents with reason recorded in metrics
 
 Invariants:
 - Each chunk.tokens ≤ max_token_per_chunk.
-- Each Document has non-empty text or is discarded with reason recorded.
+- Each Document has non-empty, quality-gated text or is discarded with reason recorded.
 
 Errors:
 - Network failure → retry/backoff; record dead links in metrics.
@@ -133,7 +139,8 @@ Errors:
 - Robots disallow → skip and record.
 
 Performance:
-- MVP sync I/O acceptable; Stage 2 moves to async with per-domain rate limits.
+- Stage 1.5: async I/O with httpx.AsyncClient + asyncio.gather for parallel fetches;
+  per-domain rate limits formalized in Stage 2.
 
 Integration notes:
 - Cache: Stage 2 stores normalized text + URL + hash in SQLite; respect cache TTL/policy.
@@ -246,8 +253,9 @@ Dedupe:
 - URL normalization; text-level dedupe via SimHash/MinHash in Stage 2.
 - Keep at least one representative per deduped cluster; prefer higher quality domain.
 
-Quality gate (Stage 2):
-- Domain allow/deny lists; language filter; minimal content length thresholds.
+Quality gate (Stage 1.5+):
+- Content Quality Gate in Reader enforces minimal length, unique-word ratio, and boilerplate/error-page rejection.
+- Domain allow/deny lists and language filter added in Stage 2.
 
 Caching (Stage 2):
 - SQLite tables for pages and trace events; keys by normalized URL + content hash.

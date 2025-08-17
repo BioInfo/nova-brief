@@ -2,11 +2,13 @@
 
 import os
 import asyncio
+import time
 from typing import Dict, Any, Optional
 import streamlit as st
 from datetime import datetime
 import json
 from dotenv import load_dotenv
+import glob
 
 # Load environment variables first
 load_dotenv()
@@ -16,6 +18,7 @@ from src.agent.orchestrator import run_research_pipeline, validate_pipeline_inpu
 from src.storage.models import create_default_constraints, Constraints
 from src.config import Config
 from src.observability.logging import get_logger
+from src.tools.eta import estimate_eta, format_eta, get_latest_eval_results
 
 # Configure logging
 logger = get_logger(__name__)
@@ -37,6 +40,11 @@ def init_session_state():
         st.session_state.research_running = False
     if 'research_logs' not in st.session_state:
         st.session_state.research_logs = []
+    # Stage 1.5: Progress tracking
+    if 'research_state' not in st.session_state:
+        st.session_state.research_state = None
+    if 'research_start_time' not in st.session_state:
+        st.session_state.research_start_time = None
 
 
 def main():
@@ -65,6 +73,10 @@ def main():
         # API Configuration status
         st.subheader("🔑 API Status")
         _render_api_status(selected_model)
+        
+        # Stage 1.5: Model Benchmarks
+        st.subheader("📊 Model Benchmarks")
+        _render_model_benchmarks()
         
         # About section
         st.subheader("ℹ️ About")
@@ -368,15 +380,92 @@ def _render_api_status(selected_model: str):
         st.info("🧠 Cerebras inference supported")
 
 
+def _render_model_benchmarks():
+    """Render model benchmarks section (Stage 1.5)."""
+    try:
+        # Get latest evaluation results
+        eval_results = get_latest_eval_results()
+        
+        if not eval_results:
+            st.info("💡 No benchmark data available. Run evaluation to see performance metrics.")
+            st.code("uv run python eval/harness.py --quick --max-topics 1")
+            return
+        
+        # Display benchmark summary
+        if "avg_duration_s" in eval_results:
+            # Single summary format
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Avg Duration", f"{eval_results.get('avg_duration_s', 0):.1f}s")
+                st.metric("Success Rate", f"{eval_results.get('success_rate', 0):.0f}%")
+            with col2:
+                st.metric("Avg Sources", f"{eval_results.get('avg_sources_count', 0):.1f}")
+                st.metric("Avg Coverage", f"{eval_results.get('avg_coverage_score', 0):.1%}")
+                
+            # Show sub-question coverage if available
+            if "avg_sub_question_coverage" in eval_results:
+                st.metric("Sub-Q Coverage", f"{eval_results.get('avg_sub_question_coverage', 0):.1%}")
+                
+        elif "results" in eval_results and eval_results["results"]:
+            # Multi-result format - show recent results
+            recent_results = eval_results["results"][-3:]  # Last 3 results
+            
+            st.write("**Recent Performance:**")
+            for i, result in enumerate(recent_results, 1):
+                if result.get("success"):
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric(f"Run {i} Duration", f"{result.get('duration_s', 0):.1f}s")
+                    with col2:
+                        st.metric(f"Run {i} Sources", result.get('sources_count', 0))
+                    with col3:
+                        st.metric(f"Run {i} Coverage", f"{result.get('coverage_score', 0):.1%}")
+        else:
+            st.info("📊 Run evaluation to see benchmark data")
+            
+    except Exception as e:
+        st.error(f"Could not load benchmark data: {e}")
+        st.info("💡 Try running: `uv run python eval/harness.py --quick`")
+
+
 def _render_status_panel():
-    """Render research status panel."""
+    """Render research status panel with Stage 1.5 real-time progress."""
     if st.session_state.research_running:
         st.info("🔄 Research Active")
         
-        # Show progress indicator
-        progress_placeholder = st.empty()
-        with progress_placeholder:
-            st.progress(0.5)  # Indeterminate progress
+        # Stage 1.5: Real-time progress tracking
+        if st.session_state.research_state:
+            state = st.session_state.research_state
+            
+            # Progress bar
+            progress_percent = state.get('progress_percent', 0.0)
+            st.progress(progress_percent)
+            
+            # Status and ETA
+            status = state.get('status', 'unknown').title()
+            st.write(f"**Status:** {status}")
+            
+            # Calculate and show ETA
+            start_time = st.session_state.research_start_time
+            if start_time and progress_percent > 0:
+                eta_seconds = estimate_eta(progress_percent, start_time)
+                if eta_seconds:
+                    eta_formatted = format_eta(eta_seconds)
+                    st.write(f"**ETA:** {eta_formatted}")
+                    
+            # Show current progress percentage
+            st.write(f"**Progress:** {int(progress_percent * 100)}%")
+            
+            # Show partial failures if any
+            partial_failures = state.get('partial_failures', [])
+            if partial_failures:
+                st.warning(f"⚠️ {len(partial_failures)} non-fatal issues occurred")
+                with st.expander("View Issues"):
+                    for failure in partial_failures:
+                        st.write(f"• **{failure.get('source', 'Unknown')}**: {failure.get('error', 'Unknown error')}")
+        else:
+            # Fallback indeterminate progress
+            st.progress(0.5)
         
     elif st.session_state.research_results:
         results = st.session_state.research_results
@@ -403,9 +492,10 @@ def _render_status_panel():
 
 
 def _run_research(topic: str, constraints: Constraints, selected_model: str):
-    """Execute research pipeline asynchronously."""
+    """Execute research pipeline asynchronously with Stage 1.5 progress tracking."""
     st.session_state.research_running = True
     st.session_state.research_logs = []
+    st.session_state.research_start_time = time.time()  # Stage 1.5: Track start time
     
     # Set the selected model in config for this session
     Config.SELECTED_MODEL = selected_model
@@ -415,18 +505,54 @@ def _run_research(topic: str, constraints: Constraints, selected_model: str):
     
     with progress_container:
         st.info("🚀 Starting research pipeline...")
-        progress_bar = st.progress(0)
+        # Stage 1.5: Enhanced progress tracking
+        progress_bar = st.progress(0.0)
         status_text = st.empty()
+        eta_text = st.empty()
     
     try:
-        # Run research pipeline
-        with st.spinner("Conducting research..."):
-            # Since Streamlit doesn't handle async well, we'll use asyncio.run
-            results = asyncio.run(run_research_pipeline(topic, constraints, selected_model))
+        # Stage 1.5: Run research with progress monitoring
+        class ProgressCallback:
+            def __init__(self, progress_bar, status_text, eta_text):
+                self.last_update = time.time()
+                self.progress_bar = progress_bar
+                self.status_text = status_text
+                self.eta_text = eta_text
+                
+            def update_progress(self, state):
+                # Throttle updates to avoid too many reruns
+                now = time.time()
+                if now - self.last_update > 0.5:  # Update every 0.5 seconds max
+                    st.session_state.research_state = state
+                    
+                    # Update UI elements directly
+                    progress_percent = state.get('progress_percent', 0.0)
+                    status = state.get('status', 'unknown').title()
+                    
+                    self.progress_bar.progress(progress_percent)
+                    self.status_text.write(f"**Status:** {status}")
+                    
+                    # Calculate and show ETA
+                    start_time = st.session_state.research_start_time
+                    if start_time and progress_percent > 0:
+                        eta_seconds = estimate_eta(progress_percent, start_time)
+                        if eta_seconds:
+                            eta_formatted = format_eta(eta_seconds)
+                            self.eta_text.write(f"**ETA:** {eta_formatted}")
+                    
+                    self.last_update = now
+        
+        callback = ProgressCallback(progress_bar, status_text, eta_text)
+        
+        # Run research pipeline with progress monitoring
+        results = asyncio.run(_run_research_with_monitoring(
+            topic, constraints, selected_model, callback
+        ))
         
         # Store results
         st.session_state.research_results = results
         st.session_state.research_running = False
+        st.session_state.research_state = None  # Clear progress state
         
         # Clear progress indicators
         progress_bar.progress(1.0)
@@ -437,6 +563,7 @@ def _run_research(topic: str, constraints: Constraints, selected_model: str):
         
     except Exception as e:
         st.session_state.research_running = False
+        st.session_state.research_state = None
         st.session_state.research_results = {
             "success": False,
             "error": str(e),
@@ -448,6 +575,17 @@ def _run_research(topic: str, constraints: Constraints, selected_model: str):
         progress_container.error(f"❌ Research failed: {str(e)}")
         
         logger.error(f"Research failed in UI: {e}")
+
+
+async def _run_research_with_monitoring(topic: str, constraints: Constraints, selected_model: str, callback):
+    """Run research pipeline with progress monitoring."""
+    # Now the orchestrator supports callbacks!
+    return await run_research_pipeline(
+        topic=topic,
+        constraints=constraints,
+        selected_model=selected_model,
+        progress_callback=callback.update_progress
+    )
 
 
 def _render_results_section():
@@ -578,7 +716,7 @@ def _render_sources_tab(results: Dict[str, Any]):
                 text = doc.get('text', '')
                 if text:
                     snippet = text[:500] + "..." if len(text) > 500 else text
-                    st.text_area("Content Preview", snippet, height=100, disabled=True)
+                    st.text_area("Content Preview", snippet, height=100, disabled=True, key=f"content_preview_{i}")
 
 
 def _render_export_tab(results: Dict[str, Any]):

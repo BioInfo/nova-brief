@@ -89,6 +89,44 @@ Build a fast, reliable deep-research agent that plans, searches, reads, verifies
 * Zero orphan claims on sample topics.
 * End-to-end <6 min on a standard query.
 
+### Stage 1.5 — Polish & Performance (Streamlit)
+
+**Scope**
+
+* **UI/UX Enhancements (src/app.py)**
+  * Real-time progress indicators using status + progress_percent from ResearchState
+  * Live stage labels (“searching”, “reading”, “analyzing”, “writing”)
+  * ETA based on recent eval results (eval/results_*.json averages)
+  * Results organized in tabs: “📄 Report”, “📊 Metrics”, “🔗 Sources”, “💾 Export”
+  * Sources tab uses expanders for URL + text preview
+
+* **Speed & Quality**
+  * Move asynchronous fetching into Stage 1.5:
+    - httpx.AsyncClient with asyncio.gather in Reader
+  * Add “Sub-Question Coverage” metric to evaluation harness
+
+* **Reliability and Error Handling**
+  * Content Quality Gate in Reader:
+    - Minimum word count (>100), reasonable unique-word ratio
+    - Reject common boilerplate/error pages (“enable JavaScript”, “access denied”)
+  * Granular non-fatal error recording:
+    - Add partial_failures: List[Dict[str, str]] to ResearchState
+    - Searcher/Reader append individual failures; pipeline continues
+  * UI surfaces partial_failures in a warning block
+
+* **Visibility of Benchmarks**
+  * “Model Benchmarks” section in UI:
+    - Load latest eval/results_*.json
+    - Display Speed, Quality, Research Depth in a dataframe
+
+**Acceptance criteria**
+
+* Real-time progress + ETA visible during runs
+* Async Reader reduces Reader stage latency vs prior baseline
+* Sources tab organized with expanders; clutter reduced
+* Evaluation harness outputs Sub-Question Coverage for runs with sub_questions
+* Non-fatal errors are captured in partial_failures and shown in UI
+
 ### Stage 2 — Core robustness
 
 **Scope**
@@ -266,17 +304,25 @@ Build a fast, reliable deep-research agent that plans, searches, reads, verifies
 * Wire Cerebras client; build basic tools; Streamlit UI; simple claim coverage.
 * Ship MVP.
 
-**Week 3–4 (Stage 2)**
+**Week 3 (Stage 1.5)**
 
-* Async fetch, caching, dedupe, quality gates, Pydantic, eval harness.
+* Implement Streamlit UX improvements (progress, ETA, tabs, sources expanders).
+* Convert Reader to async httpx with asyncio.gather.
+* Add Content Quality Gate and partial_failures tracking.
+* Extend evaluation harness with Sub-Question Coverage.
+* Add in-app “Model Benchmarks” table.
 
-**Week 5–6 (Stage 3)**
+**Week 4–5 (Stage 2)**
+
+* Caching, dedupe, domain quality gates, Pydantic schemas, robustness metrics.
+
+**Week 6–7 (Stage 3)**
 
 * LangGraph orchestration, project workspaces, API, telemetry, attachments.
 
-**Week 7–8 (Stage 4)**
+**Week 8–9 (Stage 4)**
 
-* Next.js app, evidence map, exports, admin, polish, performance passes.
+* Next.js app, evidence map, exports, admin, additional performance passes.
 
 ---
 

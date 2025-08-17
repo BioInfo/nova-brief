@@ -98,6 +98,9 @@ class ResearchState(TypedDict):
     current_round: int
     status: str  # planning, searching, reading, analyzing, verifying, writing, complete
     selected_model: Optional[str]  # Model key for LLM selection
+    progress_percent: float  # 0.0 to 1.0 progress completion
+    eta_seconds: Optional[float]  # Estimated time remaining in seconds
+    partial_failures: List[Dict[str, str]]  # Non-fatal errors: [{"source": "url", "error": "reason"}]
 
 
 class Report(TypedDict):
@@ -159,7 +162,10 @@ def create_initial_state(topic: str, constraints: Optional[Constraints] = None) 
         "metrics": create_default_metrics(),
         "current_round": 0,
         "status": "planning",
-        "selected_model": None
+        "selected_model": None,
+        "progress_percent": 0.0,
+        "eta_seconds": None,
+        "partial_failures": []
     }
 
 

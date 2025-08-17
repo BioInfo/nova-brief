@@ -78,6 +78,9 @@ Coverage:
 - claim_coverage: fraction of non-obvious claims with ≥1 source
 - strong_coverage: fraction with ≥2 sources
 - orphan_claims: count where citations list is empty
+- sub_question_coverage: fraction of planned sub_questions that are adequately addressed in the final report (Stage 1.5+)
+  - Method (Stage 1.5): keyword/semantic check of report_md vs sub_questions to determine addressed count
+  - Output example: "4/5 covered" and normalized score = 0.80
 
 Duplication:
 - duplication_rate: size(near-duplicate clusters) / total_documents
@@ -173,6 +176,9 @@ Alarms:
   - URL normalization and eTLD+1 extraction
   - dead link detection
   - duplicate clustering (Stage 2)
+  - sub_question_coverage computation (Stage 1.5):
+    - `compute_sub_question_coverage(report_md, sub_questions)` returns:
+      { "covered": int, "total": int, "score": float, "details": [...] }
 
 ---
 

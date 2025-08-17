@@ -1,7 +1,7 @@
 """Agent orchestrator that coordinates the complete research pipeline."""
 
 import time
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Callable
 from ..storage.models import (
     ResearchState, create_initial_state, create_default_constraints,
     Constraints, SearchResult, Document, Chunk, Claim, Citation, Report
@@ -17,7 +17,8 @@ async def run_research_pipeline(
     topic: str,
     constraints: Optional[Constraints] = None,
     selected_model: Optional[str] = None,
-    max_rounds: int = 3
+    max_rounds: int = 3,
+    progress_callback: Optional[Callable] = None
 ) -> Dict[str, Any]:
     """
     Execute the complete research pipeline.
@@ -27,6 +28,7 @@ async def run_research_pipeline(
         constraints: Research constraints and configuration
         selected_model: Model key for LLM selection
         max_rounds: Maximum rounds of iterative refinement
+        progress_callback: Optional callback function called with state updates
     
     Returns:
         Dictionary with final report, state, and metrics
@@ -54,7 +56,7 @@ async def run_research_pipeline(
             })
             
             # Execute pipeline stages
-            pipeline_result = await _execute_pipeline_stages(state)
+            pipeline_result = await _execute_pipeline_stages(state, progress_callback)
             
             if not pipeline_result["success"]:
                 return {
@@ -70,6 +72,7 @@ async def run_research_pipeline(
             
             state["metrics"]["duration_s"] = duration_s
             state["status"] = "complete"
+            state["progress_percent"] = 1.0  # Stage 1.5: Complete
             
             final_report = pipeline_result.get("report")
             
@@ -122,14 +125,22 @@ async def run_research_pipeline(
             }
 
 
-async def _execute_pipeline_stages(state: ResearchState) -> Dict[str, Any]:
+async def _execute_pipeline_stages(state: ResearchState, progress_callback: Optional[Callable] = None) -> Dict[str, Any]:
     """Execute all pipeline stages with iterative refinement."""
+    
+    def _notify_progress():
+        """Notify UI of progress updates."""
+        if progress_callback:
+            try:
+                progress_callback(state.copy())
+            except Exception as e:
+                logger.warning(f"Progress callback failed: {e}")
     
     try:
         max_rounds = state["constraints"]["max_rounds"]
         
         # Stage 1: Planning
-        planning_result = await _execute_planning_stage(state)
+        planning_result = await _execute_planning_stage(state, _notify_progress)
         if not planning_result["success"]:
             return planning_result
         
@@ -139,25 +150,25 @@ async def _execute_pipeline_stages(state: ResearchState) -> Dict[str, Any]:
             logger.info(f"Starting research round {round_num}/{max_rounds}")
             
             # Stage 2: Search
-            search_result = await _execute_search_stage(state)
+            search_result = await _execute_search_stage(state, _notify_progress)
             if not search_result["success"]:
                 logger.warning(f"Search failed in round {round_num}: {search_result.get('error')}")
                 continue
             
             # Stage 3: Reading
-            reading_result = await _execute_reading_stage(state)
+            reading_result = await _execute_reading_stage(state, _notify_progress)
             if not reading_result["success"]:
                 logger.warning(f"Reading failed in round {round_num}: {reading_result.get('error')}")
                 continue
             
             # Stage 4: Analysis
-            analysis_result = await _execute_analysis_stage(state)
+            analysis_result = await _execute_analysis_stage(state, _notify_progress)
             if not analysis_result["success"]:
                 logger.warning(f"Analysis failed in round {round_num}: {analysis_result.get('error')}")
                 continue
             
             # Stage 5: Verification
-            verification_result = await _execute_verification_stage(state)
+            verification_result = await _execute_verification_stage(state, _notify_progress)
             if not verification_result["success"]:
                 logger.warning(f"Verification failed in round {round_num}: {verification_result.get('error')}")
                 continue
@@ -177,7 +188,7 @@ async def _execute_pipeline_stages(state: ResearchState) -> Dict[str, Any]:
                 logger.info(f"Added {len(follow_up_queries[:3])} follow-up queries for round {round_num + 1}")
         
         # Stage 6: Writing (final stage)
-        writing_result = await _execute_writing_stage(state)
+        writing_result = await _execute_writing_stage(state, _notify_progress)
         if not writing_result["success"]:
             return {
                 "success": False,
@@ -198,10 +209,13 @@ async def _execute_pipeline_stages(state: ResearchState) -> Dict[str, Any]:
         }
 
 
-async def _execute_planning_stage(state: ResearchState) -> Dict[str, Any]:
+async def _execute_planning_stage(state: ResearchState, notify_progress: Optional[Callable] = None) -> Dict[str, Any]:
     """Execute planning stage."""
     try:
         state["status"] = "planning"
+        state["progress_percent"] = 0.1  # Stage 1.5: Planning progress
+        if notify_progress:
+            notify_progress()
         emit_event("stage_started", metadata={"stage": "planning", "topic": state["topic"]})
         
         result = await planner.plan(state["topic"], state["constraints"])
@@ -225,10 +239,13 @@ async def _execute_planning_stage(state: ResearchState) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
-async def _execute_search_stage(state: ResearchState) -> Dict[str, Any]:
+async def _execute_search_stage(state: ResearchState, notify_progress: Optional[Callable] = None) -> Dict[str, Any]:
     """Execute search stage."""
     try:
         state["status"] = "searching"
+        state["progress_percent"] = 0.25  # Stage 1.5: Searching progress
+        if notify_progress:
+            notify_progress()
         emit_event("stage_started", metadata={"stage": "searching", "queries": len(state["queries"])})
         
         result = await searcher.search(state["queries"], state["constraints"])
@@ -254,13 +271,17 @@ async def _execute_search_stage(state: ResearchState) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
-async def _execute_reading_stage(state: ResearchState) -> Dict[str, Any]:
+async def _execute_reading_stage(state: ResearchState, notify_progress: Optional[Callable] = None) -> Dict[str, Any]:
     """Execute reading stage."""
     try:
         state["status"] = "reading"
+        state["progress_percent"] = 0.5  # Stage 1.5: Reading progress
+        if notify_progress:
+            notify_progress()
         emit_event("stage_started", metadata={"stage": "reading", "urls": len(state["search_results"])})
         
-        result = await reader.read(state["search_results"], state["constraints"])
+        # Stage 1.5: Pass state to reader for partial failures tracking
+        result = await reader.read(state["search_results"], state["constraints"], state)
         
         if result["success"]:
             # Merge with existing documents and chunks
@@ -291,10 +312,13 @@ async def _execute_reading_stage(state: ResearchState) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
-async def _execute_analysis_stage(state: ResearchState) -> Dict[str, Any]:
+async def _execute_analysis_stage(state: ResearchState, notify_progress: Optional[Callable] = None) -> Dict[str, Any]:
     """Execute analysis stage."""
     try:
         state["status"] = "analyzing"
+        state["progress_percent"] = 0.7  # Stage 1.5: Analyzing progress
+        if notify_progress:
+            notify_progress()
         emit_event("stage_started", metadata={"stage": "analyzing", "chunks": len(state["chunks"])})
         
         result = await analyst.analyze(
@@ -331,10 +355,13 @@ async def _execute_analysis_stage(state: ResearchState) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
-async def _execute_verification_stage(state: ResearchState) -> Dict[str, Any]:
+async def _execute_verification_stage(state: ResearchState, notify_progress: Optional[Callable] = None) -> Dict[str, Any]:
     """Execute verification stage."""
     try:
         state["status"] = "verifying"
+        state["progress_percent"] = 0.85  # Stage 1.5: Verifying progress
+        if notify_progress:
+            notify_progress()
         emit_event("stage_started", metadata={"stage": "verifying", "claims": len(state["claims"])})
         
         result = await verifier.verify(
@@ -365,10 +392,13 @@ async def _execute_verification_stage(state: ResearchState) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
-async def _execute_writing_stage(state: ResearchState) -> Dict[str, Any]:
+async def _execute_writing_stage(state: ResearchState, notify_progress: Optional[Callable] = None) -> Dict[str, Any]:
     """Execute writing stage."""
     try:
         state["status"] = "writing"
+        state["progress_percent"] = 0.95  # Stage 1.5: Writing progress
+        if notify_progress:
+            notify_progress()
         emit_event("stage_started", metadata={"stage": "writing", "claims": len(state["claims"])})
         
         # Coverage report will be passed from verification stage if needed

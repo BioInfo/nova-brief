@@ -233,8 +233,14 @@ class EvaluationHarness:
                 
                 # Evaluate content coverage
                 coverage_score = self._evaluate_content_coverage(
-                    report["report_md"], 
+                    report["report_md"],
                     expected_elements
+                )
+                
+                # Stage 1.5: Compute sub-question coverage
+                sub_question_coverage = self.compute_sub_question_coverage(
+                    report["report_md"],
+                    state.get("sub_questions", [])
                 )
                 
                 return {
@@ -245,6 +251,7 @@ class EvaluationHarness:
                     "claims_count": len(state["claims"]),
                     "citations_count": len(state["citations"]),
                     "coverage_score": coverage_score,
+                    "sub_question_coverage": sub_question_coverage,
                     "report_md": report["report_md"],
                     "error": None
                 }
@@ -257,7 +264,8 @@ class EvaluationHarness:
                     "sources_count": 0,
                     "claims_count": 0,
                     "citations_count": 0,
-                    "coverage_score": 0.0
+                    "coverage_score": 0.0,
+                    "sub_question_coverage": {"covered": 0, "total": 0, "score": 0.0, "details": []}
                 }
         
         except Exception as e:
@@ -272,12 +280,13 @@ class EvaluationHarness:
                 "sources_count": 0,
                 "claims_count": 0,
                 "citations_count": 0,
-                "coverage_score": 0.0
+                "coverage_score": 0.0,
+                "sub_question_coverage": {"covered": 0, "total": 0, "score": 0.0, "details": []}
             }
     
     def _evaluate_content_coverage(
-        self, 
-        report_content: str, 
+        self,
+        report_content: str,
         expected_elements: List[str]
     ) -> float:
         """Evaluate how well the report covers expected elements."""
@@ -299,6 +308,82 @@ class EvaluationHarness:
         
         return covered_elements / len(expected_elements)
     
+    def compute_sub_question_coverage(
+        self,
+        report_md: str,
+        sub_questions: List[str]
+    ) -> Dict[str, Any]:
+        """
+        Compute Sub-Question Coverage metric (Stage 1.5).
+        
+        Args:
+            report_md: Final report markdown content
+            sub_questions: List of planned sub-questions from planner
+            
+        Returns:
+            Dictionary with coverage metrics:
+            {
+                "covered": int,
+                "total": int,
+                "score": float,
+                "details": [{"question": str, "addressed": bool, "matches": List[str]}]
+            }
+        """
+        if not sub_questions:
+            return {
+                "covered": 0,
+                "total": 0,
+                "score": 1.0,  # No sub-questions means 100% coverage
+                "details": []
+            }
+        
+        report_lower = report_md.lower()
+        covered_count = 0
+        details = []
+        
+        # Define common stopwords to filter out
+        stopwords = {
+            "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
+            "of", "with", "by", "from", "up", "about", "into", "through", "during",
+            "before", "after", "above", "below", "between", "among", "this", "that",
+            "these", "those", "is", "are", "was", "were", "be", "been", "have",
+            "has", "had", "do", "does", "did", "will", "would", "could", "should"
+        }
+        
+        for question in sub_questions:
+            # Extract meaningful keywords from the question
+            question_words = question.lower().split()
+            keywords = [word.strip("?.,!:;()[]{}\"'") for word in question_words
+                        if len(word) > 3 and word.lower() not in stopwords]
+            
+            # Count keyword matches in the report
+            matches = []
+            for keyword in keywords:
+                if keyword in report_lower:
+                    matches.append(keyword)
+            
+            # Consider question addressed if at least 40% of keywords are found
+            addressed = len(matches) >= len(keywords) * 0.4 if keywords else False
+            
+            if addressed:
+                covered_count += 1
+            
+            details.append({
+                "question": question,
+                "addressed": addressed,
+                "matches": matches,
+                "match_ratio": len(matches) / len(keywords) if keywords else 0
+            })
+        
+        score = covered_count / len(sub_questions) if sub_questions else 1.0
+        
+        return {
+            "covered": covered_count,
+            "total": len(sub_questions),
+            "score": score,
+            "details": details
+        }
+    
     def _calculate_evaluation_metrics(self, total_duration: float) -> Dict[str, Any]:
         """Calculate overall evaluation metrics."""
         if not self.results:
@@ -312,8 +397,10 @@ class EvaluationHarness:
             avg_word_count = sum(r["word_count"] for r in successful_runs) / len(successful_runs)
             avg_sources = sum(r["sources_count"] for r in successful_runs) / len(successful_runs)
             avg_coverage = sum(r["coverage_score"] for r in successful_runs) / len(successful_runs)
+            # Stage 1.5: Average sub-question coverage
+            avg_sub_question_coverage = sum(r["sub_question_coverage"]["score"] for r in successful_runs) / len(successful_runs)
         else:
-            avg_duration = avg_word_count = avg_sources = avg_coverage = 0
+            avg_duration = avg_word_count = avg_sources = avg_coverage = avg_sub_question_coverage = 0
         
         return {
             "success": True,
@@ -326,6 +413,7 @@ class EvaluationHarness:
             "avg_word_count": avg_word_count,
             "avg_sources_count": avg_sources,
             "avg_coverage_score": avg_coverage,
+            "avg_sub_question_coverage": avg_sub_question_coverage,
             "results": self.results
         }
     

@@ -162,3 +162,53 @@ Created a comprehensive multi-model evaluation harness that enables comparing 1-
 - Facilitates optimization of model configurations for specific use cases
 - Provides foundation for continuous performance monitoring and improvement
 - Supports research into optimal routing strategies and provider selection
+[2025-08-17 11:21:20] - **Adopted Stage 1.5 — Polish & Performance; retain Streamlit UI for this stage**
+
+## Decision
+Introduce an intermediate delivery phase, "Stage 1.5 — Polish & Performance," between Stage 1 (MVP) and Stage 2 (Core robustness). Continue using Streamlit for the UI during Stage 1.5.
+
+## Rationale 
+- Improve user experience and perceived performance before adding new architectural complexity.
+- Provide real-time progress visibility and refined results layout to reduce user uncertainty.
+- Accelerate reading throughput via async fetching to reduce end-to-end latency.
+- Establish quality safeguards (Content Quality Gate) to ensure higher-quality inputs to downstream agents.
+- Surface evaluation insights in-app via Model Benchmarks to inform model/provider choices.
+
+## Implementation Details
+- docs/master-plan.md updated with Stage 1.5 scope, tasks, and renumbered weeks.
+- docs/prd.md updated with a Stage 1.5 section and adjusted implementation plan.
+- docs/specs/evaluation-harness.md expanded with sub_question_coverage metric and notes.
+- docs/specs/module-specs.md augmented with a Reader Content Quality Gate and Stage 1.5 async I/O.
+- README.md roadmap updated to include Stage 1.5 and feature list.
+- UI enhancements: progress bar with status/percent, ETA, tabs for Report/Metrics/Sources/Export, Sources expanders.
+- Reader: httpx.AsyncClient + asyncio.gather for parallel fetch, Content Quality Gate.
+- Data model: partial_failures added in ResearchState at Stage 1.5 to record non-fatal errors.
+
+## Impact
+- Faster, clearer runs with improved status transparency.
+- Better input quality for analyst/verifier stages.
+- In-app visibility of evaluation results to guide model selection.
+
+[2025-08-17 07:52:27] - Stage 1.5 Real-Time Progress Implementation
+**Decision:** Implemented callback-based progress tracking system in orchestrator
+**Rationale:** Required real-time UI updates without polling. Each pipeline stage now calls progress_callback with updated ResearchState
+**Implementation:** Modified run_research_pipeline() to accept optional progress_callback parameter, updated all stage functions to call notify_progress()
+**Impact:** Enables live progress bars, ETA calculation, and status updates in Streamlit UI
+
+[2025-08-17 07:52:27] - Content Quality Gate Integration
+**Decision:** Integrated content quality validation directly into Reader stage
+**Rationale:** Prevent low-quality content from entering analysis pipeline, improving final report quality
+**Implementation:** Added validate_content() call before document creation, tracks rejections in partial_failures
+**Impact:** 2 pages rejected in testing (CNN.com, NBCNews.com), improved content standards
+
+[2025-08-17 07:52:27] - Enhanced JSON Parsing Robustness
+**Decision:** Implemented multi-stage JSON parsing with repair and fallback extraction
+**Rationale:** LLM responses occasionally generate malformed JSON causing pipeline failures
+**Implementation:** Added _repair_json() for common fixes, _extract_claims_fallback() for regex-based extraction
+**Impact:** Successfully recovered 14 and 5 claims respectively during testing, zero pipeline failures
+
+[2025-08-17 07:52:27] - Streamlit UI Progress Enhancement
+**Decision:** Replaced static spinner with dynamic progress bars and real-time status updates
+**Rationale:** Better user experience with visibility into pipeline progress and estimated completion time
+**Implementation:** ProgressCallback class updates UI elements directly, throttled to 0.5s intervals
+**Impact:** Users now see Planning (10%), Searching (25%), Reading (50%), Analyzing (70%), Verifying (85%), Writing (95%), Complete (100%)

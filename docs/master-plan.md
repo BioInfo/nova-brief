@@ -304,16 +304,31 @@ Weeks 1–2 (Stage 1 — MVP)
 - Logs: tool calls, pages fetched, tokens
 Deliverable: working MVP, acceptance criteria met
 
-Weeks 3–4 (Stage 2 — Core robustness)
-- Async httpx with per-domain rate limits
+Week 3 (Stage 1.5 — Polish & Performance)
+- Streamlit UX upgrades:
+  - Real-time progress with stage status and percent complete
+  - ETA estimation using average durations from latest eval/results_*.json
+  - Results tabs: "📄 Report", "📊 Metrics", "🔗 Sources", "💾 Export"
+  - Sources: per-document expanders with URL + text preview
+- Speed & Quality:
+  - Move async fetching (httpx.AsyncClient + asyncio.gather) into Reader
+  - Introduce "Sub-Question Coverage" metric in evaluation harness
+- Reliability & Error Surface:
+  - Add Content Quality Gate to Reader (min words, unique-word ratio, boilerplate/error-phrase checks)
+  - Add partial_failures to ResearchState; non-fatal errors are surfaced in UI
+- In-app visibility:
+  - "Model Benchmarks" tab/section in UI showing latest eval results summary
+
+Weeks 4–5 (Stage 2 — Core robustness)
 - Dedupe (URL normalization + SimHash/MinHash)
-- Quality gate (allow/deny lists, language, length)
+- Quality gate (domain allow/deny lists, language, length)
 - SQLite caching for fetched pages and traces
 - Pydantic v2 schemas; typed JSON export
 - Eval harness with 10 topics + metrics
+- Per-domain rate limits for async fetching
 Deliverable: robustness acceptance criteria met
 
-Weeks 5–6 (Stage 3 — Scale and control)
+Weeks 6–7 (Stage 3 — Scale and control)
 - Orchestrate with LangGraph
 - Project workspaces, source controls in UI
 - API endpoint /run with key auth
@@ -321,7 +336,7 @@ Weeks 5–6 (Stage 3 — Scale and control)
 - Attachments (user PDFs/URLs)
 Deliverable: throughput, repeatability, API docs
 
-Weeks 7–8 (Stage 4 — Product polish)
+Weeks 8–9 (Stage 4 — Product polish)
 - Next.js app with evidence map, exports
 - Performance passes (parallelism, caching, streaming)
 - Safety features (robots.txt, caps)

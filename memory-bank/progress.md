@@ -108,3 +108,38 @@ YYYY-MM-DD HH:MM:SS - Log of updates made.
 - System supports comparative analysis across all available models and providers
 - Documentation provides complete usage guidelines and performance benchmarks
 - Future enhancements could include automated performance tracking and cost analysis
+
+[2025-08-17 11:21:40] - **Stage 1.5 — Polish & Performance: Planning integrated and docs updated**
+
+## Completed Tasks
+- Multi-Model Evaluation Harness implemented and documented
+- Documentation updated to introduce Stage 1.5 in master-plan, PRD, specs, and README
+- Decision logged to retain Streamlit UI during Stage 1.5
+
+## Current Tasks
+- Implement Stage 1.5 features:
+  - Streamlit UX improvements (progress bar with status/percent + ETA; tabs for Report/Metrics/Sources/Export; Sources expanders)
+  - Async Reader using httpx.AsyncClient + asyncio.gather
+  - Content Quality Gate in Reader
+  - partial_failures field appended to ResearchState; propagate non-fatal errors from Searcher/Reader
+  - Evaluation harness: Sub-Question Coverage metric
+  - In-app Model Benchmarks view (read most recent eval results)
+
+## Next Steps
+- Ship Stage 1.5 implementation
+- Prepare Stage 2 adjustments (rate limits, caching, Pydantic, dedupe)
+
+
+[2025-08-17 07:52:08] - Stage 1.5 — Polish & Performance COMPLETED
+- ✅ Real-time progress tracking with live UI updates
+- ✅ Content Quality Gate filtering low-quality pages  
+- ✅ Enhanced async Reader with concurrent URL fetching
+- ✅ Robust JSON parsing with repair and fallback mechanisms
+- ✅ ETA calculation based on historical evaluation data
+- ✅ Sub-Question Coverage metric in evaluation harness
+- ✅ Enhanced Streamlit UI with organized tabs and progress bars
+- ✅ Model Benchmarks section showing latest performance data
+- ✅ All acceptance criteria verified through testing
+- ✅ MVP test suite: 7/8 tests passing
+- ✅ Evaluation harness: 100% success rate with Stage 1.5 features active
+- ✅ Streamlit UI: Real-time progress tracking fully operational

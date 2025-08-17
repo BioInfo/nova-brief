@@ -15,7 +15,7 @@ A fast, reliable deep-research agent that plans, searches, reads, verifies, and 
 🤖 **Configurable LLM Providers**
 - Multiple model/provider support via OpenRouter and direct APIs
 - Default: `openai/gpt-oss-120b` (Cerebras) for high-performance research
-- Alternative models: GPT-4o, Claude 3.5 Sonnet, GPT-4o Mini, and more
+- Alternative models: GPT-5, Claude 4 Sonnet, Gemini, and more
 - UI-based model selection with real-time API key validation
 
 📊 **Professional Output**
@@ -386,16 +386,25 @@ FETCH_TIMEOUT_S=10
 
 ### Current: MVP (Stage 1)
 - ✅ Complete agent pipeline
-- ✅ OpenRouter + Cerebras integration  
+- ✅ OpenRouter + Cerebras integration
 - ✅ Web search and content extraction
 - ✅ Streamlit UI
 - ✅ Basic evaluation harness
 
-### Planned: Stage 2
-- Async HTTP client with rate limiting
+### Next: Stage 1.5 — Polish & Performance (Streamlit)
+- Real-time progress and status with ETA
+- Async Reader (httpx.AsyncClient + asyncio.gather)
+- Refined results layout: tabs for Report, Metrics, Sources, Export
+- Sources with expanders and previews to reduce clutter
+- Content Quality Gate in Reader; partial_failures surfaced in UI
+- Evaluation: Sub-Question Coverage metric
+- In-app “Model Benchmarks” table from latest eval results
+
+### Planned: Stage 2 — Core robustness
+- Rate limiting and per-domain controls for async fetching
 - SQLite caching layer
 - Pydantic v2 data models
-- Enhanced evaluation metrics
+- Enhanced evaluation metrics and robustness
 
 ### Future: Stage 3+
 - LangGraph orchestration
