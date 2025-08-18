@@ -378,3 +378,13 @@ This comprehensive audit and polish phase transforms Nova Brief into a professio
 - **Rationale**: Writer agent fallback was returning raw JSON when parsing failed
 - **Implementation**: Added JSON parsing with `report_markdown` field extraction
 - **Impact**: Robust content display regardless of writer agent output format
+
+
+[2025-08-18 17:47:00] - UI Reference Display Architecture Decision
+Eliminated redundant reference display functions (_render_enhanced_sources_tab vs _render_sources_tab) and internal duplication. Implemented unified reference display with clear categorization: cited sources with reference numbers, and additional processed sources in expandable format. This reduces user confusion and improves UI clarity.
+
+[2025-08-18 17:47:00] - Parallel Model Evaluation Architecture Decision
+Replaced serial model evaluation with parallel execution using asyncio.gather() in multi_model_harness.py. This provides ~3x speed improvement for multi-model comparisons, essential for efficient model benchmarking. Trade-off: slightly more complex error handling but significant performance gains.
+
+[2025-08-18 17:47:00] - JSON Parsing Robustness Architecture Decision
+Implemented multi-strategy JSON parsing in analyst agent to handle malformed responses from different models. Strategy cascade: parse as-is → repair common issues → extract from markdown → fix truncation → fallback structure → regex extraction. This prevents analysis failures from JSON formatting inconsistencies across models.

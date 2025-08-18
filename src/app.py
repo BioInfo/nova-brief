@@ -1230,54 +1230,107 @@ def _render_source_content(url: str, documents: list, index: int):
 
 
 def _render_enhanced_sources_tab(results):
-    """Render enhanced sources tab with better organization."""
+    """Render unified sources tab without redundancy."""
     st.subheader("🔗 Sources & References")
     
     report = results.get("report", {})
     state = results.get("state", {})
     
-    # References from report
+    # Get references and documents
     references = report.get("references", [])
     documents = state.get("documents", [])
     
-    if references:
-        st.write("**📋 Referenced Sources:**")
+    if not documents and not references:
+        st.info("No sources were processed during this research.")
+        return
+    
+    # Create a unified view by mapping citations to documents
+    cited_urls = {ref.get("url") for ref in references if ref.get("url")}
+    
+    # Group documents by citation status and domain
+    cited_docs = []
+    uncited_docs = []
+    
+    for doc in documents:
+        if doc.get("url") in cited_urls:
+            cited_docs.append(doc)
+        else:
+            uncited_docs.append(doc)
+    
+    # Show summary stats
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("📚 Total Sources", len(documents))
+    with col2:
+        st.metric("📝 Cited Sources", len(cited_docs))
+    with col3:
+        st.metric("📄 Referenced in Report", len(references))
+    
+    st.markdown("---")
+    
+    # Cited sources section
+    if cited_docs:
+        st.markdown("### 📝 Cited Sources")
+        st.caption("Sources that were referenced in the final report")
         
-        # Group by domain for better organization
+        # Group cited sources by domain
         domain_groups = {}
-        for ref in references:
-            url = ref.get("url", "")
+        for doc in cited_docs:
+            url = doc.get("url", "")
             domain = url.split("//")[-1].split("/")[0] if "//" in url else "unknown"
             if domain not in domain_groups:
                 domain_groups[domain] = []
-            domain_groups[domain].append(ref)
+            domain_groups[domain].append(doc)
         
-        for domain, refs in domain_groups.items():
-            with st.expander(f"🌐 {domain} ({len(refs)} sources)", expanded=len(domain_groups) <= 3):
-                for ref in refs:
-                    st.write(f"{ref.get('number', '?')}. [{ref.get('title', 'Link')}]({ref.get('url', '#')})")
-    
-    # All documents processed
-    if documents:
-        st.write("**📄 All Processed Documents:**")
-        
-        for i, doc in enumerate(documents, 1):
-            title = doc.get("title", "Untitled")
-            url = doc.get("url", "")
-            domain = doc.get("source_meta", {}).get("domain", "Unknown")
-            content_length = len(doc.get("text", ""))
-            
-            with st.expander(f"Source {i}: {title}", expanded=False):
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.write(f"**Domain:** {domain}")
-                    st.write(f"**Content:** {content_length:,} characters")
-                with col2:
-                    st.write(f"**URL:** [Link]({url})")
+        for domain, docs in domain_groups.items():
+            with st.expander(f"🌐 {domain} ({len(docs)} sources)", expanded=len(domain_groups) <= 2):
+                for doc in docs:
+                    # Find corresponding reference number
+                    ref_number = "?"
+                    doc_url = doc.get("url")
+                    for ref in references:
+                        if ref.get("url") == doc_url:
+                            ref_number = ref.get("number", "?")
+                            break
+                    
+                    title = doc.get("title", "Untitled")
+                    content_length = len(doc.get("text", ""))
+                    
+                    st.markdown(f"**[{ref_number}] {title}**")
+                    st.markdown(f"🔗 [Open Source]({doc_url})")
+                    st.caption(f"Content: {content_length:,} characters")
+                    
                     if content_length > 0:
-                        st.success("✅ Content extracted")
+                        st.success("✅ Content successfully extracted and analyzed")
                     else:
-                        st.warning("⚠️ No content extracted")
+                        st.warning("⚠️ Limited content extracted")
+                    st.markdown("---")
+    
+    # Additional processed sources (not cited)
+    if uncited_docs:
+        st.markdown("### 📄 Additional Sources Analyzed")
+        st.caption("Sources that were processed but not directly cited in the final report")
+        
+        # Show in a more compact format
+        with st.expander(f"View {len(uncited_docs)} additional sources", expanded=False):
+            for i, doc in enumerate(uncited_docs, 1):
+                title = doc.get("title", "Untitled")
+                url = doc.get("url", "")
+                domain = doc.get("source_meta", {}).get("domain", "Unknown")
+                content_length = len(doc.get("text", ""))
+                
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.write(f"**{i}. {title}**")
+                    st.write(f"🌐 {domain} | 🔗 [Link]({url})")
+                with col2:
+                    if content_length > 0:
+                        st.success("✅ Processed")
+                    else:
+                        st.warning("❌ No content")
+                
+                if i < len(uncited_docs):  # Don't add separator after last item
+                    st.markdown("---")
 
 
 def _render_details_tab(results):
@@ -1621,40 +1674,6 @@ def _render_metrics_tab(results: Dict[str, Any]):
                 data_cols[2].markdown(f"<span style='color: #666;'>{desc}</span>", unsafe_allow_html=True)
 
 
-def _render_sources_tab(results: Dict[str, Any]):
-    """Render sources and citations tab."""
-    st.subheader("🔗 Sources & Citations")
-    
-    report = results.get("report", {})
-    state = results.get("state", {})
-    
-    # References from report
-    references = report.get("references", [])
-    if references:
-        st.write("**References:**")
-        for ref in references:
-            st.write(f"{ref['number']}. [{ref.get('title', 'Link')}]({ref['url']})")
-    
-    # Document sources
-    documents = state.get('documents', [])
-    if documents:
-        st.subheader("📄 Source Documents")
-        
-        for i, doc in enumerate(documents, 1):
-            with st.expander(f"Source {i}: {doc.get('title', 'Untitled')}"):
-                st.write(f"**URL:** {doc['url']}")
-                st.write(f"**Content Type:** {doc.get('content_type', 'Unknown')}")
-                
-                source_meta = doc.get('source_meta', {})
-                if source_meta:
-                    st.write(f"**Domain:** {source_meta.get('domain', 'Unknown')}")
-                    st.write(f"**Content Length:** {source_meta.get('content_length', 0)} chars")
-                
-                # Show snippet
-                text = doc.get('text', '')
-                if text:
-                    snippet = text[:500] + "..." if len(text) > 500 else text
-                    st.text_area("Content Preview", snippet, height=100, disabled=True, key=f"content_preview_{i}")
 
 
 def _render_export_tab(results: Dict[str, Any]):

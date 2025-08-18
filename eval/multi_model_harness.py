@@ -100,51 +100,90 @@ class MultiModelEvaluationHarness:
         # Configure constraints for evaluation
         constraints = self._get_evaluation_constraints(quick)
         
-        # Run evaluation across all models and topics
+        # Run evaluation across all models and topics in parallel
         start_time = time.time()
         
-        # Results will be organized by model, then by topic
-        model_results = {}
+        print(f"\n🚀 Starting parallel evaluation across {len(models)} models and {len(topics)} topics")
         
-        for model_idx, model in enumerate(models, 1):
-            print(f"\n{'='*40} Model {model_idx}/{len(models)}: {model} {'='*40}")
-            
+        # Create all model-topic combinations for parallel execution
+        evaluation_tasks = []
+        for model in models:
             model_config = self.config.get_available_models_dict().get(model)
+            print(f"\n🤖 {model}")
             if model_config:
-                print(f"🔧 Provider: {model_config.provider}")
-                print(f"📦 Model ID: {model_config.model_id}")
-                print(f"💡 Display Name: {model_config.display_name}")
+                print(f"     Provider: {model_config.provider}")
+                print(f"     Model ID: {model_config.model_id}")
+                print(f"     Display: {model_config.display_name}")
             
-            model_results[model] = []
-            
-            # Run each topic for this model
-            for topic_idx, topic_data in enumerate(topics, 1):
-                print(f"\n{'-'*20} Model: {model} | Topic {topic_idx}/{len(topics)} {'-'*20}")
-                
+            for topic_data in topics:
                 topic = topic_data["topic"]
                 expected_elements = topic_data.get("expected_elements", [])
                 
-                print(f"🎯 Topic: {topic}")
-                
-                # Run research pipeline for this model-topic combination
-                result = await self._evaluate_single_model_topic(
-                    model,
-                    topic,
-                    constraints,
-                    expected_elements
+                # Create async task for this model-topic combination
+                task = self._evaluate_single_model_topic_with_metadata(
+                    model, topic, constraints, expected_elements
                 )
-                
-                result["model"] = model
-                result["topic"] = topic
-                result["expected_elements"] = expected_elements
-                model_results[model].append(result)
-                
-                # Print immediate results
-                if result["success"]:
-                    print(f"✅ Completed in {result['duration_s']:.1f}s")
-                    print(f"📊 {result['word_count']} words, {result['sources_count']} sources")
-                else:
-                    print(f"❌ Failed: {result['error']}")
+                evaluation_tasks.append(task)
+        
+        print(f"\n⚡ Running {len(evaluation_tasks)} evaluations in parallel...")
+        
+        # Execute all evaluations in parallel with progress tracking
+        results = await asyncio.gather(*evaluation_tasks, return_exceptions=True)
+        
+        # Organize results by model
+        model_results = {}
+        task_idx = 0
+        
+        for model in models:
+            model_results[model] = []
+            
+            for topic_data in topics:
+                if task_idx < len(results):
+                    result = results[task_idx]
+                    
+                    # Handle exceptions
+                    if isinstance(result, Exception):
+                        print(f"❌ {model} | {topic_data['topic'][:50]}... | Error: {result}")
+                        result = {
+                            "success": False,
+                            "error": str(result),
+                            "model": model,
+                            "topic": topic_data["topic"],
+                            "expected_elements": topic_data.get("expected_elements", []),
+                            "duration_s": 0,
+                            "word_count": 0,
+                            "sources_count": 0,
+                            "claims_count": 0,
+                            "citations_count": 0,
+                            "coverage_score": 0.0,
+                            "model_info": self.config.get_available_models_dict().get(model)
+                        }
+                    elif isinstance(result, dict):
+                        # Print results as they come in
+                        if result.get("success", False):
+                            print(f"✅ {model} | {result['topic'][:50]}... | {result['duration_s']:.1f}s | {result['word_count']} words")
+                        else:
+                            print(f"❌ {model} | {result['topic'][:50]}... | {result['error']}")
+                    else:
+                        # Fallback for unexpected result types
+                        print(f"⚠️ {model} | {topic_data['topic'][:50]}... | Unexpected result type: {type(result)}")
+                        result = {
+                            "success": False,
+                            "error": f"Unexpected result type: {type(result)}",
+                            "model": model,
+                            "topic": topic_data["topic"],
+                            "expected_elements": topic_data.get("expected_elements", []),
+                            "duration_s": 0,
+                            "word_count": 0,
+                            "sources_count": 0,
+                            "claims_count": 0,
+                            "citations_count": 0,
+                            "coverage_score": 0.0,
+                            "model_info": self.config.get_available_models_dict().get(model)
+                        }
+                    
+                    model_results[model].append(result)
+                    task_idx += 1
         
         # Calculate comparative metrics
         total_duration = time.time() - start_time
@@ -293,6 +332,23 @@ class MultiModelEvaluationHarness:
         
         return constraints
     
+    async def _evaluate_single_model_topic_with_metadata(
+        self,
+        model: str,
+        topic: str,
+        constraints: Constraints,
+        expected_elements: List[str]
+    ) -> Dict[str, Any]:
+        """Evaluate research pipeline on a single model-topic combination with metadata."""
+        result = await self._evaluate_single_model_topic(model, topic, constraints, expected_elements)
+        
+        # Add metadata to result
+        result["model"] = model
+        result["topic"] = topic
+        result["expected_elements"] = expected_elements
+        
+        return result
+    
     async def _evaluate_single_model_topic(
         self,
         model: str,
@@ -318,7 +374,7 @@ class MultiModelEvaluationHarness:
                 
                 # Evaluate content coverage
                 coverage_score = self._evaluate_content_coverage(
-                    report["report_md"], 
+                    report["report_md"],
                     expected_elements
                 )
                 

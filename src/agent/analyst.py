@@ -290,28 +290,8 @@ Extract specific claims from this content, focusing on verifiable facts, estimat
             if not content:
                 raise ValueError("Empty response content")
             
-            # Try to extract and repair JSON from response
-            json_content = content.strip()
-            
-            # Look for JSON object boundaries if there's extra text
-            if not json_content.startswith('{'):
-                # Try to find JSON in the content
-                import re
-                json_match = re.search(r'\{.*\}', json_content, re.DOTALL)
-                if json_match:
-                    json_content = json_match.group(0)
-                else:
-                    raise ValueError("No JSON object found in response")
-            
-            # First attempt: parse as-is
-            try:
-                analysis_result = json.loads(json_content)
-            except json.JSONDecodeError as e:
-                # Second attempt: try to repair common JSON issues
-                logger.warning(f"Initial JSON parse failed, attempting repair: {e}")
-                json_content = _repair_json(json_content)
-                analysis_result = json.loads(json_content)
-            
+            # Try multiple JSON parsing strategies
+            analysis_result = _parse_json_response(content)
             raw_claims = analysis_result.get("claims", [])
             sections = analysis_result.get("sections", [])
             
@@ -486,33 +466,161 @@ def _create_draft_sections(claims: List[Claim], sections: List[str], topic: str)
     return unique_sections[:6]  # Limit to 6 sections
 
 
+def _parse_json_response(content: str) -> Dict[str, Any]:
+    """Parse JSON response using multiple strategies."""
+    import re
+    
+    # Strategy 1: Try to extract and parse JSON as-is
+    json_content = content.strip()
+    
+    # Look for JSON object boundaries if there's extra text
+    if not json_content.startswith('{'):
+        # Try to find JSON in the content
+        json_match = re.search(r'\{.*\}', json_content, re.DOTALL)
+        if json_match:
+            json_content = json_match.group(0)
+        else:
+            raise ValueError("No JSON object found in response")
+    
+    # Strategy 1: Parse as-is
+    try:
+        return json.loads(json_content)
+    except json.JSONDecodeError as e:
+        logger.warning(f"Initial JSON parse failed, attempting repair: {e}")
+    
+    # Strategy 2: Try to repair common JSON issues
+    try:
+        repaired_json = _repair_json(json_content)
+        return json.loads(repaired_json)
+    except json.JSONDecodeError as e:
+        logger.warning(f"Repaired JSON parse failed: {e}")
+    
+    # Strategy 3: Try to extract JSON from markdown code blocks
+    try:
+        code_block_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL | re.IGNORECASE)
+        if code_block_match:
+            json_content = code_block_match.group(1)
+            return json.loads(json_content)
+        
+        # Also try without code block markers
+        json_match = re.search(r'\{[^}]*"claims"[^}]*\}', content, re.DOTALL)
+        if json_match:
+            json_content = json_match.group(0)
+            return json.loads(json_content)
+    except json.JSONDecodeError:
+        pass
+    
+    # Strategy 4: Try to fix common truncation issues
+    try:
+        # If the JSON seems truncated, try to complete it
+        if json_content.count('{') > json_content.count('}') or json_content.count('[') > json_content.count(']'):
+            # Add missing closing braces and brackets
+            missing_braces = json_content.count('{') - json_content.count('}')
+            missing_brackets = json_content.count('[') - json_content.count(']')
+            
+            # Try to intelligently close the JSON structure
+            completed_json = json_content
+            
+            # If we're in the middle of a string, close it
+            if completed_json.count('"') % 2 == 1:
+                completed_json += '"'
+            
+            # Close arrays first, then objects
+            for _ in range(missing_brackets):
+                completed_json += ']'
+            for _ in range(missing_braces):
+                completed_json += '}'
+                
+            return json.loads(completed_json)
+    except json.JSONDecodeError:
+        pass
+    
+    # Strategy 5: Try to create a minimal valid response if we can detect structure
+    try:
+        # Look for claims array structure even if malformed
+        if 'claims' in content.lower():
+            # Create a minimal valid structure
+            minimal_json = {"claims": [], "sections": []}
+            logger.warning("Created minimal JSON structure due to parsing failures")
+            return minimal_json
+    except Exception:
+        pass
+    
+    # If all strategies fail, raise the original error
+    raise ValueError(f"Could not parse JSON response after trying multiple strategies")
+
+
 def _repair_json(json_content: str) -> str:
     """Attempt to repair common JSON formatting issues."""
     import re
     
+    logger.debug(f"Attempting to repair JSON content: {json_content[:200]}...")
+    
+    # Clean up the content first
+    json_content = json_content.strip()
+    
+    # Remove any text before the first {
+    start_idx = json_content.find('{')
+    if start_idx > 0:
+        json_content = json_content[start_idx:]
+    
+    # Remove any text after the last }
+    end_idx = json_content.rfind('}')
+    if end_idx > 0 and end_idx < len(json_content) - 1:
+        json_content = json_content[:end_idx + 1]
+    
     # Remove any trailing commas before closing brackets/braces
     json_content = re.sub(r',\s*([}\]])', r'\1', json_content)
     
-    # Ensure proper quotes around unquoted keys
-    json_content = re.sub(r'(\w+):\s*(["\'{])', r'"\1": \2', json_content)
+    # Fix unquoted property names (more comprehensive)
+    # Handle cases like: confidence: 0.85 -> "confidence": 0.85
+    json_content = re.sub(r'([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'\1"\2":', json_content)
+    
+    # Fix missing quotes around string values that aren't already quoted
+    # Handle cases like: "type": fact -> "type": "fact"
+    json_content = re.sub(r':\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*([,}\]])', r': "\1"\2', json_content)
     
     # Fix missing commas between objects in arrays
     json_content = re.sub(r'}\s*{', r'}, {', json_content)
     
-    # Fix missing commas between properties
-    json_content = re.sub(r'"\s*\n\s*"', r'",\n  "', json_content)
+    # Fix missing commas between array elements
+    json_content = re.sub(r']\s*\[', r'], [', json_content)
+    
+    # Fix missing commas between properties (handle both same-line and multiline)
+    json_content = re.sub(r'"\s*\n\s*"', r'",\n"', json_content)
+    json_content = re.sub(r'([0-9.}])\s*\n\s*"', r'\1,\n"', json_content)
+    json_content = re.sub(r']\s*\n\s*"', r'],\n"', json_content)
+    
+    # Fix double quotes inside strings that break JSON
+    # This is tricky - try to escape quotes that are inside string values
+    def fix_quotes_in_strings(match):
+        full_match = match.group(0)
+        # If there are unescaped quotes inside, escape them
+        if full_match.count('"') > 2:  # More than just the opening and closing quotes
+            inner_content = full_match[1:-1]  # Remove outer quotes
+            inner_content = inner_content.replace('"', '\\"')  # Escape inner quotes
+            return f'"{inner_content}"'
+        return full_match
+    
+    # Apply the quote fixing to string values
+    json_content = re.sub(r'"[^"]*"', fix_quotes_in_strings, json_content)
     
     # Ensure the JSON ends properly
     if not json_content.rstrip().endswith('}'):
-        # Try to close any unclosed objects/arrays
+        # Count unclosed brackets and braces
         open_braces = json_content.count('{') - json_content.count('}')
         open_brackets = json_content.count('[') - json_content.count(']')
         
+        # Close unclosed structures
         for _ in range(open_brackets):
             json_content += ']'
         for _ in range(open_braces):
             json_content += '}'
     
+    # Final cleanup - remove any extra commas that might have been introduced
+    json_content = re.sub(r',\s*([}\]])', r'\1', json_content)
+    
+    logger.debug(f"Repaired JSON: {json_content[:200]}...")
     return json_content
 
 
