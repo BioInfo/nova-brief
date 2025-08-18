@@ -388,3 +388,45 @@ Replaced serial model evaluation with parallel execution using asyncio.gather() 
 
 [2025-08-18 17:47:00] - JSON Parsing Robustness Architecture Decision
 Implemented multi-strategy JSON parsing in analyst agent to handle malformed responses from different models. Strategy cascade: parse as-is → repair common issues → extract from markdown → fix truncation → fallback structure → regex extraction. This prevents analysis failures from JSON formatting inconsistencies across models.
+
+
+[2025-08-18 20:12:13] - **Major UI Architecture Refactoring and Research Modes Implementation**
+
+## Decision
+Successfully refactored the monolithic 1749-line app.py into clean, modular UI components following separation of concerns principle. Simultaneously implemented Research Modes feature as planned in the agent upgrades roadmap.
+
+## Rationale
+- **Code Maintainability**: 1749-line file violated single responsibility principle and was becoming unmaintainable
+- **Separation of Concerns**: Each UI component now has a single, focused responsibility
+- **Feature Implementation**: Research Modes were implemented as part of the refactoring to provide user-friendly research depth control
+- **Best Practices**: Modular architecture enables easier testing, debugging, and future enhancements
+
+## Implementation Details
+
+### New Architecture:
+- **`src/app.py`** (73 lines): Clean entry point with session state and environment checks
+- **`src/ui/sidebar.py`** (334 lines): Complete sidebar rendering including Research Modes, model selection, target audience, and constraints
+- **`src/ui/main_panel.py`** (392 lines): State-aware main panel handling ready/running/results states with progress tracking
+- **`src/ui/results.py`** (399 lines): Results visualization including Evidence Map, Sources, and Details tabs
+- **`src/ui/__init__.py`**: Clean module exports
+
+### Research Modes Implementation:
+- **🚀 Quick Brief**: Speed-focused (1 round, 2 sources/domain, 10s timeout, 400-600 words)
+- **⚖️ Balanced Analysis**: Default balanced approach (3 rounds, 3 sources/domain, 15s timeout, 800-1200 words)  
+- **🔬 Deep Dive**: Quality-focused (5 rounds, 5 sources/domain, 20s timeout, 1500-2000 words)
+- **Target Audience Selection**: Executive Summary, Technical Report, General Audience
+- **Advanced Overrides**: Optional manual constraint overrides in expandable section
+
+### Configuration System:
+- Added `RESEARCH_MODES` configuration to `src/config.py` with structured mode definitions
+- Helper methods: `get_research_modes()`, `apply_research_mode()`, `get_research_mode_config()`
+- Backward compatibility maintained with existing constraint system
+
+## Impact
+- **96% reduction** in main app file size (1749 → 73 lines)
+- **Enhanced UX**: Research Modes provide intuitive speed vs quality control
+- **Maintainable Code**: Each component has single responsibility
+- **Future-Ready**: Clean architecture supports Phase 2 Agent Intelligence features
+- **No Breaking Changes**: Existing functionality preserved while adding new features
+
+This refactoring creates a solid foundation for implementing the remaining agent upgrades including heterogeneous agent policies, critic agent, and advanced capabilities.

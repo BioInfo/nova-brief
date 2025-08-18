@@ -11,23 +11,81 @@ from ..observability.tracing import TimedOperation, emit_event
 logger = get_logger(__name__)
 
 
-WRITING_SYSTEM_PROMPT = """You are an expert research writer who creates comprehensive, well-structured reports. Your task is to:
+# Audience-specific system prompts for customized writing styles
+WRITING_SYSTEM_PROMPTS = {
+    "Executive": """You are an expert research writer creating executive briefings. Your task is to:
 
-1. Transform research claims into a coherent, analytical narrative
-2. Organize content into logical sections with clear flow
+1. Transform research claims into a strategic, high-level narrative focused on business implications
+2. Organize content with executive summary first, then key findings and strategic recommendations
 3. Include proper in-text citations using numbered format [1], [2], etc.
-4. Write in an authoritative, analytical tone suitable for professional briefings
-5. Ensure coverage of all major findings while maintaining readability
-6. Target 800-1200 words for comprehensive coverage
+4. Write in a concise, authoritative tone suitable for C-suite executives and decision-makers
+5. Focus on actionable insights, competitive advantages, and strategic implications
+6. Target 600-800 words for executive attention spans
 
 Guidelines:
-- Start with a concise introduction that establishes context
-- Organize findings into themed sections based on the research
-- Use numbered citations [1] immediately after claims requiring sources
-- Include quantitative data and specific examples where available
-- Address multiple perspectives when relevant
-- Conclude with key implications and future considerations
-- Maintain objective, professional tone throughout
+- Lead with an executive summary highlighting the most critical insights
+- Emphasize business impact, market opportunities, and strategic considerations
+- Use clear, decisive language with minimal technical jargon
+- Include quantitative data that supports business decisions
+- Focus on implications for competitive positioning and strategic planning
+- Conclude with clear recommendations and next steps
+- Maintain professional, confident tone throughout
+
+YOU MUST respond with ONLY a valid JSON object in this exact format:
+{
+  "report_markdown": "Complete markdown report with numbered citations",
+  "key_findings": ["finding 1", "finding 2", "finding 3"],
+  "executive_summary": "Brief executive summary (2-3 sentences)"
+}
+
+DO NOT include any text before or after the JSON. ONLY return the JSON object.""",
+
+    "Technical": """You are an expert research writer creating technical documentation. Your task is to:
+
+1. Transform research claims into a detailed, technically accurate narrative with comprehensive coverage
+2. Organize content into logical sections with methodical progression and detailed analysis
+3. Include proper in-text citations using numbered format [1], [2], etc.
+4. Write in a precise, analytical tone suitable for technical professionals and researchers
+5. Include technical details, methodologies, data analysis, and implementation considerations
+6. Target 1000-1500 words for comprehensive technical coverage
+
+Guidelines:
+- Provide detailed technical background and context
+- Include methodology descriptions, data analysis, and technical specifications
+- Use precise technical terminology and detailed explanations
+- Present quantitative data with statistical analysis and confidence intervals
+- Address technical limitations, assumptions, and areas for further research
+- Include implementation details and technical considerations
+- Conclude with technical implications and research recommendations
+- Maintain objective, rigorous scientific tone throughout
+
+YOU MUST respond with ONLY a valid JSON object in this exact format:
+{
+  "report_markdown": "Complete markdown report with numbered citations",
+  "key_findings": ["finding 1", "finding 2", "finding 3"],
+  "executive_summary": "Brief executive summary (2-3 sentences)"
+}
+
+DO NOT include any text before or after the JSON. ONLY return the JSON object.""",
+
+    "General": """You are an expert research writer creating accessible reports for general audiences. Your task is to:
+
+1. Transform research claims into a clear, engaging narrative accessible to non-specialist readers
+2. Organize content into logical sections with smooth transitions and clear explanations
+3. Include proper in-text citations using numbered format [1], [2], etc.
+4. Write in an informative, engaging tone suitable for educated general audiences
+5. Explain complex concepts clearly while maintaining accuracy and credibility
+6. Target 800-1000 words for comprehensive yet accessible coverage
+
+Guidelines:
+- Start with a clear introduction that explains why the topic matters
+- Use accessible language while avoiding oversimplification
+- Define technical terms and provide context for specialized concepts
+- Include real-world examples and analogies to illustrate key points
+- Present quantitative data in understandable terms with context
+- Address different perspectives and potential implications for readers
+- Conclude with practical implications and broader significance
+- Maintain informative, authoritative yet approachable tone throughout
 
 YOU MUST respond with ONLY a valid JSON object in this exact format:
 {
@@ -37,6 +95,10 @@ YOU MUST respond with ONLY a valid JSON object in this exact format:
 }
 
 DO NOT include any text before or after the JSON. ONLY return the JSON object."""
+}
+
+# Default system prompt (fallback to Executive style)
+WRITING_SYSTEM_PROMPT = WRITING_SYSTEM_PROMPTS["Executive"]
 
 
 async def write(
@@ -45,7 +107,8 @@ async def write(
     draft_sections: List[str],
     topic: str,
     sub_questions: List[str],
-    coverage_report: Optional[Dict[str, Any]] = None
+    coverage_report: Optional[Dict[str, Any]] = None,
+    target_audience: str = "Executive"
 ) -> Dict[str, Any]:
     """
     Generate final research report with citations and references.
@@ -57,6 +120,7 @@ async def write(
         topic: Main research topic
         sub_questions: Research questions addressed
         coverage_report: Verification coverage metrics
+        target_audience: Target audience for writing style ("Executive", "Technical", "General")
     
     Returns:
         Dictionary with success status, report, and metadata
@@ -79,13 +143,14 @@ async def write(
             # Create citation mapping and assign numbers
             citation_map, references = _create_citation_mapping(citations)
             
-            # Generate report content using LLM
+            # Generate report content using LLM with audience customization
             report_content = await _generate_report_content(
                 topic,
                 sub_questions,
                 organized_claims,
                 citation_map,
-                draft_sections
+                draft_sections,
+                target_audience
             )
             
             if not report_content["success"]:
@@ -175,7 +240,8 @@ async def _generate_report_content(
     sub_questions: List[str],
     organized_claims: Dict[str, List[Claim]],
     citation_map: Dict[str, int],
-    draft_sections: List[str]
+    draft_sections: List[str],
+    target_audience: str = "Executive"
 ) -> Dict[str, Any]:
     """Generate report content using LLM with structured output."""
     
@@ -226,9 +292,12 @@ Target: 800-1200 words."""
             "additionalProperties": False
         }
         
+        # Select audience-specific system prompt
+        system_prompt = WRITING_SYSTEM_PROMPTS.get(target_audience, WRITING_SYSTEM_PROMPTS["Executive"])
+        
         # Call LLM for report generation (using prompt-based JSON instead of structured output)
         messages = [
-            {"role": "system", "content": WRITING_SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ]
         
@@ -269,7 +338,7 @@ Target: 800-1200 words."""
                 # Try one more retry with a simpler prompt
                 logger.info("Attempting retry with simplified prompt")
                 return await _retry_with_simple_prompt(
-                    topic, sub_questions, organized_claims, citation_map
+                    topic, sub_questions, organized_claims, citation_map, target_audience
                 )
             
             # Enhanced content debugging
@@ -350,7 +419,7 @@ Target: 800-1200 words."""
             # Final fallback: try simple prompt
             logger.info("Attempting final retry with basic prompt")
             return await _retry_with_simple_prompt(
-                topic, sub_questions, organized_claims, citation_map
+                topic, sub_questions, organized_claims, citation_map, target_audience
             )
         
     except Exception as e:
@@ -366,13 +435,35 @@ async def _retry_with_simple_prompt(
     topic: str,
     sub_questions: List[str],
     organized_claims: Dict[str, List[Claim]],
-    citation_map: Dict[str, int]
+    citation_map: Dict[str, int],
+    target_audience: str = "Executive"
 ) -> Dict[str, Any]:
     """
     Retry report generation with a simplified prompt when structured output fails.
     """
     try:
         logger.info("Attempting simple prompt retry for report generation")
+        
+        # Audience-specific instructions and word targets
+        audience_instructions = {
+            "Executive": {
+                "target_words": "600-800 words",
+                "tone": "concise, strategic tone suitable for executives",
+                "focus": "business implications and strategic recommendations"
+            },
+            "Technical": {
+                "target_words": "1000-1500 words",
+                "tone": "detailed, analytical tone with technical precision",
+                "focus": "technical details, methodologies, and comprehensive analysis"
+            },
+            "General": {
+                "target_words": "800-1000 words",
+                "tone": "clear, accessible tone for general audiences",
+                "focus": "understandable explanations and practical implications"
+            }
+        }
+        
+        instructions = audience_instructions.get(target_audience, audience_instructions["Executive"])
         
         # Create a very simple prompt that doesn't require JSON
         simple_prompt = f"""Write a comprehensive research report on: {topic}
@@ -384,16 +475,19 @@ Key Findings:
 {_prepare_simple_content_summary(organized_claims, citation_map)}
 
 Instructions:
-- Write in markdown format
+- Write in markdown format for {target_audience} audience
 - Include an introduction, main findings, and conclusion
 - Use numbered citations [1], [2], etc.
-- Target 800-1200 words
-- Write in professional, analytical tone
+- Target {instructions['target_words']}
+- Write in {instructions['tone']}
+- Focus on {instructions['focus']}
 
 Please write the complete report now:"""
 
-        # Use a simple system prompt
-        simple_system = "You are a professional research writer. Write clear, well-structured reports based on the provided research findings."
+        # Use audience-specific system prompt for consistency
+        system_prompt = WRITING_SYSTEM_PROMPTS.get(target_audience, WRITING_SYSTEM_PROMPTS["Executive"])
+        # Simplify the system prompt for retry
+        simple_system = f"You are a professional research writer creating reports for {target_audience} audiences. Write clear, well-structured reports based on the provided research findings."
         
         messages = [
             {"role": "system", "content": simple_system},

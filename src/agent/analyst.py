@@ -17,7 +17,9 @@ ANALYSIS_SYSTEM_PROMPT = """You are a research analyst expert at synthesizing in
 2. Classify each claim as fact, estimate, or opinion
 3. Assign confidence scores (0.0-1.0) based on evidence quality
 4. Associate claims with their supporting source URLs
-5. Identify areas needing additional research
+5. Identify contradictions between claims or conflicting data points
+6. Group claims that provide strong, multi-source support for the same findings
+7. Identify areas needing additional research
 
 Guidelines:
 - Focus on specific, verifiable statements rather than general observations
@@ -27,6 +29,14 @@ Guidelines:
 - Include diverse perspectives when available
 - Flag claims that need stronger evidence
 
+CRITICAL SYNTHESIS ANALYSIS:
+After extracting claims, perform contradiction analysis:
+- Identify any claims that appear to contradict each other or offer conflicting data points
+- Look for conflicting numbers, dates, assessments, or conclusions
+- Note when sources disagree on the same topic
+- Group together claims that provide strong, multi-source support for the same key finding
+- Identify claims that are supported by multiple independent sources
+
 CRITICAL: You MUST respond with ONLY a valid JSON object in this exact format, with no additional text:
 {
   "claims": [
@@ -35,6 +45,21 @@ CRITICAL: You MUST respond with ONLY a valid JSON object in this exact format, w
       "type": "fact",
       "confidence": 0.85,
       "source_urls": ["https://example.com"]
+    }
+  ],
+  "contradictions": [
+    {
+      "claim_ids": ["claim_1", "claim_2"],
+      "description": "Claims contradict on market size figures",
+      "details": "Source A claims $50B market while Source B claims $75B market"
+    }
+  ],
+  "supporting_clusters": [
+    {
+      "topic": "Key finding supported by multiple sources",
+      "claim_ids": ["claim_3", "claim_4", "claim_5"],
+      "confidence": 0.9,
+      "source_count": 3
     }
   ],
   "sections": ["Key Theme 1", "Key Theme 2"]
@@ -69,7 +94,9 @@ async def analyze(
                     "error": "No content chunks provided for analysis",
                     "claims": [],
                     "citations": [],
-                    "draft_sections": []
+                    "draft_sections": [],
+                    "contradictions": [],
+                    "supporting_clusters": []
                 }
             
             logger.info(f"Analyzing {len(chunks)} chunks from {len(documents)} documents")
@@ -102,8 +129,39 @@ async def analyze(
                 else:
                     logger.warning(f"Batch analysis failed: {batch_result.get('error')}")
             
+            # Collect contradictions and supporting clusters from batch results
+            all_contradictions = []
+            all_supporting_clusters = []
+            
+            # Re-process batches to extract contradictions and supporting clusters
+            for i in range(0, len(doc_urls), batch_size):
+                batch_urls = doc_urls[i:i + batch_size]
+                batch_result = await _analyze_document_batch(
+                    batch_urls,
+                    chunks_by_doc,
+                    documents,
+                    sub_questions,
+                    topic
+                )
+                
+                if batch_result["success"]:
+                    # Extract contradictions and supporting clusters from this batch
+                    raw_contradictions = batch_result.get("contradictions", [])
+                    raw_supporting_clusters = batch_result.get("supporting_clusters", [])
+                    
+                    # Process and validate them against the current claims
+                    processed_contradictions = _process_contradictions(raw_contradictions, all_claims)
+                    processed_clusters = _process_supporting_clusters(raw_supporting_clusters, all_claims)
+                    
+                    all_contradictions.extend(processed_contradictions)
+                    all_supporting_clusters.extend(processed_clusters)
+            
             # Deduplicate and merge similar claims
             final_claims, final_citations = _deduplicate_claims(all_claims, all_citations)
+            
+            # Process contradictions and supporting clusters across all batches
+            final_contradictions = _merge_contradictions(all_contradictions, final_claims)
+            final_supporting_clusters = _merge_supporting_clusters(all_supporting_clusters, final_claims)
             
             # Create structured draft sections
             draft_sections = _create_draft_sections(final_claims, all_sections, topic)
@@ -158,6 +216,8 @@ async def analyze(
                 "claims": final_claims,
                 "citations": final_citations,
                 "draft_sections": draft_sections,
+                "contradictions": final_contradictions,
+                "supporting_clusters": final_supporting_clusters,
                 "metadata": metadata
             }
             
@@ -179,7 +239,9 @@ async def analyze(
                 "error_type": type(e).__name__,
                 "claims": [],
                 "citations": [],
-                "draft_sections": []
+                "draft_sections": [],
+                "contradictions": [],
+                "supporting_clusters": []
             }
 
 
@@ -232,7 +294,7 @@ Source Content:
 
 Extract specific claims from this content, focusing on verifiable facts, estimates, and expert opinions. Associate each claim with its source URLs."""
 
-        # Define JSON schema for structured output
+        # Define enhanced JSON schema for structured output with contradiction detection
         json_schema = {
             "type": "object",
             "properties": {
@@ -252,13 +314,46 @@ Extract specific claims from this content, focusing on verifiable facts, estimat
                         "required": ["text", "type", "confidence", "source_urls"]
                     }
                 },
+                "contradictions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "claim_ids": {
+                                "type": "array",
+                                "items": {"type": "string"}
+                            },
+                            "description": {"type": "string"},
+                            "details": {"type": "string"}
+                        },
+                        "required": ["claim_ids", "description", "details"]
+                    },
+                    "description": "Claims that contradict each other or offer conflicting data"
+                },
+                "supporting_clusters": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "topic": {"type": "string"},
+                            "claim_ids": {
+                                "type": "array",
+                                "items": {"type": "string"}
+                            },
+                            "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                            "source_count": {"type": "number"}
+                        },
+                        "required": ["topic", "claim_ids", "confidence", "source_count"]
+                    },
+                    "description": "Claims that provide strong, multi-source support for key findings"
+                },
                 "sections": {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Draft section headings or key themes identified"
                 }
             },
-            "required": ["claims", "sections"],
+            "required": ["claims", "contradictions", "supporting_clusters", "sections"],
             "additionalProperties": False
         }
         
@@ -294,6 +389,8 @@ Extract specific claims from this content, focusing on verifiable facts, estimat
             analysis_result = _parse_json_response(content)
             raw_claims = analysis_result.get("claims", [])
             sections = analysis_result.get("sections", [])
+            contradictions = analysis_result.get("contradictions", [])
+            supporting_clusters = analysis_result.get("supporting_clusters", [])
             
         except (json.JSONDecodeError, ValueError) as e:
             logger.error(f"Failed to parse analysis response: {e}")
@@ -307,7 +404,9 @@ Extract specific claims from this content, focusing on verifiable facts, estimat
                     "success": True,
                     "claims": fallback_result["claims"],
                     "citations": fallback_result["citations"],
-                    "sections": ["Analysis Results", "Key Findings"]
+                    "sections": ["Analysis Results", "Key Findings"],
+                    "contradictions": [],
+                    "supporting_clusters": []
                 }
             
             return {
@@ -315,7 +414,9 @@ Extract specific claims from this content, focusing on verifiable facts, estimat
                 "error": f"Response parsing failed: {str(e)}",
                 "claims": [],
                 "citations": [],
-                "sections": []
+                "sections": [],
+                "contradictions": [],
+                "supporting_clusters": []
             }
         
         # Process claims and create citations
@@ -356,7 +457,9 @@ Extract specific claims from this content, focusing on verifiable facts, estimat
             "success": True,
             "claims": claims,
             "citations": citations,
-            "sections": sections
+            "sections": sections,
+            "contradictions": contradictions,
+            "supporting_clusters": supporting_clusters
         }
         
     except Exception as e:
@@ -366,7 +469,9 @@ Extract specific claims from this content, focusing on verifiable facts, estimat
             "error": str(e),
             "claims": [],
             "citations": [],
-            "sections": []
+            "sections": [],
+            "contradictions": [],
+            "supporting_clusters": []
         }
 
 
@@ -679,3 +784,162 @@ def _extract_claims_fallback(content: str, doc_urls: List[str]) -> Dict[str, Any
         "claims": claims,
         "citations": citations
     }
+
+
+def _merge_contradictions(all_contradictions: List[Dict[str, Any]], final_claims: List[Claim]) -> List[Dict[str, Any]]:
+    """Merge and deduplicate contradictions from multiple batches."""
+    if not all_contradictions:
+        return []
+    
+    # Create a mapping of claim text to claim ID for cross-batch references
+    claim_text_to_id = {claim["text"].lower().strip(): claim["id"] for claim in final_claims}
+    
+    merged_contradictions = []
+    seen_contradiction_pairs = set()
+    
+    for contradiction in all_contradictions:
+        try:
+            # Resolve claim IDs to current claim set
+            resolved_claim_ids = []
+            for claim_id in contradiction.get("claim_ids", []):
+                # Try to find the claim by ID first
+                matching_claim = next((c for c in final_claims if c["id"] == claim_id), None)
+                if matching_claim:
+                    resolved_claim_ids.append(claim_id)
+                else:
+                    # If ID not found, try to match by text content
+                    # This handles cases where claims were deduplicated and IDs changed
+                    logger.debug(f"Could not find claim with ID {claim_id}, attempting text matching")
+            
+            # Only include contradictions with at least 2 valid claims
+            if len(resolved_claim_ids) >= 2:
+                # Create a sorted tuple to detect duplicates
+                contradiction_key = tuple(sorted(resolved_claim_ids))
+                if contradiction_key not in seen_contradiction_pairs:
+                    merged_contradictions.append({
+                        "claim_ids": resolved_claim_ids,
+                        "description": contradiction.get("description", "Claims contradict each other"),
+                        "details": contradiction.get("details", "Conflicting information found")
+                    })
+                    seen_contradiction_pairs.add(contradiction_key)
+                    
+        except Exception as e:
+            logger.warning(f"Error processing contradiction: {e}")
+            continue
+    
+    logger.info(f"Merged {len(merged_contradictions)} contradictions from {len(all_contradictions)} batch results")
+    return merged_contradictions
+
+
+def _merge_supporting_clusters(all_supporting_clusters: List[Dict[str, Any]], final_claims: List[Claim]) -> List[Dict[str, Any]]:
+    """Merge and deduplicate supporting clusters from multiple batches."""
+    if not all_supporting_clusters:
+        return []
+    
+    merged_clusters = []
+    clusters_by_topic = {}
+    
+    for cluster in all_supporting_clusters:
+        try:
+            topic = cluster.get("topic", "").lower().strip()
+            if not topic:
+                continue
+                
+            # Resolve claim IDs to current claim set
+            resolved_claim_ids = []
+            for claim_id in cluster.get("claim_ids", []):
+                if any(c["id"] == claim_id for c in final_claims):
+                    resolved_claim_ids.append(claim_id)
+            
+            # Only include clusters with at least 2 valid claims
+            if len(resolved_claim_ids) >= 2:
+                if topic not in clusters_by_topic:
+                    clusters_by_topic[topic] = {
+                        "topic": cluster.get("topic", topic),
+                        "claim_ids": set(),
+                        "confidence_scores": [],
+                        "source_counts": []
+                    }
+                
+                # Merge claim IDs and track metrics
+                clusters_by_topic[topic]["claim_ids"].update(resolved_claim_ids)
+                clusters_by_topic[topic]["confidence_scores"].append(cluster.get("confidence", 0.0))
+                clusters_by_topic[topic]["source_counts"].append(cluster.get("source_count", 0))
+                
+        except Exception as e:
+            logger.warning(f"Error processing supporting cluster: {e}")
+            continue
+    
+    # Convert merged clusters back to list format
+    for topic_data in clusters_by_topic.values():
+        claim_ids = list(topic_data["claim_ids"])
+        
+        # Calculate aggregated metrics
+        avg_confidence = sum(topic_data["confidence_scores"]) / len(topic_data["confidence_scores"])
+        total_source_count = sum(topic_data["source_counts"])
+        
+        merged_clusters.append({
+            "topic": topic_data["topic"],
+            "claim_ids": claim_ids,
+            "confidence": round(avg_confidence, 3),
+            "source_count": total_source_count
+        })
+    
+    # Sort by confidence and source count (higher is better)
+    merged_clusters.sort(key=lambda x: (x["confidence"], x["source_count"]), reverse=True)
+    
+    logger.info(f"Merged {len(merged_clusters)} supporting clusters from {len(all_supporting_clusters)} batch results")
+    return merged_clusters
+
+
+def _process_contradictions(contradictions: List[Dict[str, Any]], claims: List[Claim]) -> List[Dict[str, Any]]:
+    """Process and validate contradiction data."""
+    processed = []
+    
+    for contradiction in contradictions:
+        try:
+            claim_ids = contradiction.get("claim_ids", [])
+            if len(claim_ids) < 2:
+                continue
+                
+            # Verify all referenced claims exist
+            valid_claim_ids = [cid for cid in claim_ids if any(c["id"] == cid for c in claims)]
+            if len(valid_claim_ids) >= 2:
+                processed.append({
+                    "claim_ids": valid_claim_ids,
+                    "description": contradiction.get("description", "Claims contradict each other"),
+                    "details": contradiction.get("details", "Conflicting information detected")
+                })
+                
+        except Exception as e:
+            logger.warning(f"Error processing contradiction: {e}")
+            continue
+    
+    return processed
+
+
+def _process_supporting_clusters(clusters: List[Dict[str, Any]], claims: List[Claim]) -> List[Dict[str, Any]]:
+    """Process and validate supporting cluster data."""
+    processed = []
+    
+    for cluster in clusters:
+        try:
+            claim_ids = cluster.get("claim_ids", [])
+            if len(claim_ids) < 2:
+                continue
+                
+            # Verify all referenced claims exist
+            valid_claim_ids = [cid for cid in claim_ids if any(c["id"] == cid for c in claims)]
+            if len(valid_claim_ids) >= 2:
+                processed.append({
+                    "topic": cluster.get("topic", "Supporting evidence"),
+                    "claim_ids": valid_claim_ids,
+                    "confidence": float(cluster.get("confidence", 0.0)),
+                    "source_count": int(cluster.get("source_count", 0))
+                })
+                
+        except Exception as e:
+            logger.warning(f"Error processing supporting cluster: {e}")
+            continue
+    
+    return processed
