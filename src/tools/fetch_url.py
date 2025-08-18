@@ -1,12 +1,14 @@
 """URL fetching and HTML content extraction for Nova Brief."""
 
 import os
+import asyncio
 from typing import Dict, Any, Optional
 from urllib.parse import urlparse, urljoin
 from urllib.robotparser import RobotFileParser
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 import trafilatura
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 from ..observability.logging import get_logger
 from ..observability.tracing import TimedOperation, emit_event
@@ -15,14 +17,16 @@ logger = get_logger(__name__)
 
 
 class RobotsTxtChecker:
-    """Utility for checking robots.txt compliance."""
+    """Utility for checking robots.txt compliance with timeout protection."""
     
-    def __init__(self):
+    def __init__(self, timeout: float = 5.0):
         self._cache = {}
+        self._timeout = timeout
+        self._executor = ThreadPoolExecutor(max_workers=2)
     
-    def can_fetch(self, url: str, user_agent: str = "*") -> bool:
+    async def can_fetch(self, url: str, user_agent: str = "*") -> bool:
         """
-        Check if URL can be fetched according to robots.txt.
+        Check if URL can be fetched according to robots.txt with timeout.
         
         Args:
             url: URL to check
@@ -37,13 +41,18 @@ class RobotsTxtChecker:
             robots_url = urljoin(base_url, "/robots.txt")
             
             if robots_url not in self._cache:
-                rp = RobotFileParser()
-                rp.set_url(robots_url)
+                # Use asyncio.wait_for with timeout to prevent hanging
                 try:
-                    rp.read()
+                    rp = await asyncio.wait_for(
+                        self._fetch_robots_txt(robots_url),
+                        timeout=self._timeout
+                    )
                     self._cache[robots_url] = rp
-                except Exception:
-                    # If robots.txt can't be fetched, assume allowed
+                except asyncio.TimeoutError:
+                    logger.warning(f"Timeout checking robots.txt for {robots_url}, defaulting to allow")
+                    self._cache[robots_url] = None
+                except Exception as e:
+                    logger.warning(f"Error checking robots.txt for {robots_url}: {e}, defaulting to allow")
                     self._cache[robots_url] = None
             
             rp = self._cache[robots_url]
@@ -55,6 +64,21 @@ class RobotsTxtChecker:
         except Exception as e:
             logger.warning(f"Error checking robots.txt for {url}: {e}")
             return True  # Default to allowing if check fails
+    
+    async def _fetch_robots_txt(self, robots_url: str):
+        """Fetch robots.txt in a thread pool with timeout protection."""
+        loop = asyncio.get_event_loop()
+        
+        def _sync_fetch():
+            rp = RobotFileParser()
+            rp.set_url(robots_url)
+            rp.read()
+            return rp
+        
+        try:
+            return await loop.run_in_executor(self._executor, _sync_fetch)
+        except Exception:
+            return None
 
 
 robots_checker = RobotsTxtChecker()
@@ -98,8 +122,8 @@ async def run(
                     "url": url
                 }
             
-            # Check robots.txt if required
-            if respect_robots and not robots_checker.can_fetch(url, user_agent):
+            # Check robots.txt if required (now async with timeout)
+            if respect_robots and not await robots_checker.can_fetch(url, user_agent):
                 logger.info(f"URL blocked by robots.txt: {url}")
                 return {
                     "success": False,

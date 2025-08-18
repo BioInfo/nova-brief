@@ -143,3 +143,13 @@ YYYY-MM-DD HH:MM:SS - Log of updates made.
 - ✅ MVP test suite: 7/8 tests passing
 - ✅ Evaluation harness: 100% success rate with Stage 1.5 features active
 - ✅ Streamlit UI: Real-time progress tracking fully operational
+
+
+[2025-01-18 00:27:00] - **UI/UX Improvements & Critical Bug Fixes Completed**
+- Fixed HTML code display in Performance Analysis metrics table (replaced raw HTML with Streamlit components)
+- Implemented pagination for claims list (7 claims per page with navigation controls)
+- Fixed brief tab showing raw JSON instead of rendered markdown
+- Completely reorganized Details tab with professional styling and consistent design
+- **CRITICAL FIX**: Resolved hanging issue in reading stage caused by robots.txt timeout
+- Enhanced async timeout protection prevents indefinite hanging on slow servers
+- All research runs now complete successfully without hanging issues

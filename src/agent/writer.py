@@ -246,28 +246,82 @@ Target: 800-1200 words."""
                 "report_markdown": ""
             }
         
-        # Parse response with robust JSON extraction
+        # Parse response with robust JSON extraction and debugging
         try:
             content = response.get("content", "")
+            
+            # Enhanced debugging for empty responses
             if not content:
-                raise ValueError("Empty response content")
+                logger.error("Empty response content detected")
+                logger.error(f"Full response object: {response}")
+                logger.error(f"Response keys: {list(response.keys())}")
+                
+                # Check if there's any other content in the response
+                if "response" in response:
+                    resp_obj = response["response"]
+                    logger.error(f"Response object type: {type(resp_obj)}")
+                    if hasattr(resp_obj, 'choices') and resp_obj.choices:
+                        choice = resp_obj.choices[0]
+                        logger.error(f"Choice object: {choice}")
+                        logger.error(f"Choice message: {choice.message}")
+                        logger.error(f"Choice finish_reason: {getattr(choice, 'finish_reason', 'N/A')}")
+                
+                # Try one more retry with a simpler prompt
+                logger.info("Attempting retry with simplified prompt")
+                return await _retry_with_simple_prompt(
+                    topic, sub_questions, organized_claims, citation_map
+                )
+            
+            # Enhanced content debugging
+            logger.debug(f"Raw content length: {len(content)}")
+            logger.debug(f"Content preview: {content[:200]}...")
             
             # Try direct JSON parsing first
             try:
                 result = json.loads(content)
-            except json.JSONDecodeError:
+                logger.debug("Direct JSON parsing successful")
+            except json.JSONDecodeError as json_err:
+                logger.warning(f"Direct JSON parsing failed: {json_err}")
                 # Fallback: Extract JSON from text using regex
                 import re
-                json_match = re.search(r'\{.*\}', content, re.DOTALL)
-                if json_match:
-                    result = json.loads(json_match.group(0))
-                else:
+                
+                # Try multiple JSON extraction patterns
+                json_patterns = [
+                    r'\{.*\}',  # Original pattern
+                    r'```json\s*(\{.*?\})\s*```',  # JSON in code blocks
+                    r'```\s*(\{.*?\})\s*```',  # Generic code blocks
+                    r'(\{[^{}]*"report_markdown"[^{}]*\})'  # Target specific JSON
+                ]
+                
+                result = None
+                for pattern in json_patterns:
+                    json_match = re.search(pattern, content, re.DOTALL)
+                    if json_match:
+                        try:
+                            json_content = json_match.group(1) if len(json_match.groups()) > 0 else json_match.group(0)
+                            result = json.loads(json_content)
+                            logger.info(f"JSON extracted successfully with pattern: {pattern}")
+                            break
+                        except json.JSONDecodeError:
+                            continue
+                
+                if not result:
+                    logger.error("All JSON extraction patterns failed")
                     raise ValueError("No valid JSON found in response")
             
             report_markdown = result.get("report_markdown", "")
             
             if not report_markdown:
-                raise ValueError("No report content generated")
+                logger.warning("No report_markdown field found in JSON response")
+                # Try to find content in other fields
+                for field in ["content", "report", "markdown", "text"]:
+                    if field in result and result[field]:
+                        report_markdown = result[field]
+                        logger.info(f"Using content from field: {field}")
+                        break
+                
+                if not report_markdown:
+                    raise ValueError("No report content found in any expected fields")
             
             return {
                 "success": True,
@@ -278,22 +332,26 @@ Target: 800-1200 words."""
             
         except (json.JSONDecodeError, ValueError) as e:
             logger.error(f"Failed to parse report response: {e}")
-            logger.error(f"Raw content: {content[:500]}...")
-            # Fallback: try to extract content directly
+            logger.error(f"Raw content ({len(content)} chars): {content}")
+            
+            # Enhanced fallback: try to extract content directly
             raw_content = response.get("content", "")
             if raw_content and len(raw_content) > 100:
-                return {
-                    "success": True,
-                    "report_markdown": raw_content,
-                    "key_findings": [],
-                    "executive_summary": ""
-                }
-            else:
-                return {
-                    "success": False,
-                    "error": f"Response parsing failed: {str(e)}",
-                    "report_markdown": ""
-                }
+                # Check if it looks like markdown content
+                if any(marker in raw_content.lower() for marker in ["#", "##", "introduction", "conclusion"]):
+                    logger.info("Using raw content as fallback markdown")
+                    return {
+                        "success": True,
+                        "report_markdown": raw_content,
+                        "key_findings": [],
+                        "executive_summary": "Report generated using fallback content extraction."
+                    }
+            
+            # Final fallback: try simple prompt
+            logger.info("Attempting final retry with basic prompt")
+            return await _retry_with_simple_prompt(
+                topic, sub_questions, organized_claims, citation_map
+            )
         
     except Exception as e:
         logger.error(f"Content generation failed: {e}")
@@ -302,6 +360,118 @@ Target: 800-1200 words."""
             "error": str(e),
             "report_markdown": ""
         }
+
+
+async def _retry_with_simple_prompt(
+    topic: str,
+    sub_questions: List[str],
+    organized_claims: Dict[str, List[Claim]],
+    citation_map: Dict[str, int]
+) -> Dict[str, Any]:
+    """
+    Retry report generation with a simplified prompt when structured output fails.
+    """
+    try:
+        logger.info("Attempting simple prompt retry for report generation")
+        
+        # Create a very simple prompt that doesn't require JSON
+        simple_prompt = f"""Write a comprehensive research report on: {topic}
+
+Research Questions:
+{chr(10).join(f"- {q}" for q in sub_questions)}
+
+Key Findings:
+{_prepare_simple_content_summary(organized_claims, citation_map)}
+
+Instructions:
+- Write in markdown format
+- Include an introduction, main findings, and conclusion
+- Use numbered citations [1], [2], etc.
+- Target 800-1200 words
+- Write in professional, analytical tone
+
+Please write the complete report now:"""
+
+        # Use a simple system prompt
+        simple_system = "You are a professional research writer. Write clear, well-structured reports based on the provided research findings."
+        
+        messages = [
+            {"role": "system", "content": simple_system},
+            {"role": "user", "content": simple_prompt}
+        ]
+        
+        response = await chat(
+            messages=messages,
+            temperature=0.3,
+            max_tokens=3000
+        )
+        
+        if not response["success"]:
+            return {
+                "success": False,
+                "error": f"Simple prompt retry failed: {response.get('error')}",
+                "report_markdown": ""
+            }
+        
+        content = response.get("content", "")
+        if not content:
+            return {
+                "success": False,
+                "error": "Simple prompt retry returned empty content",
+                "report_markdown": ""
+            }
+        
+        # Clean up the content and ensure it's reasonable
+        if len(content) < 200:
+            return {
+                "success": False,
+                "error": "Simple prompt retry returned insufficient content",
+                "report_markdown": ""
+            }
+        
+        logger.info(f"Simple prompt retry successful: {len(content)} characters generated")
+        
+        return {
+            "success": True,
+            "report_markdown": content,
+            "key_findings": [],
+            "executive_summary": f"Research report on {topic} generated using simplified prompt."
+        }
+        
+    except Exception as e:
+        logger.error(f"Simple prompt retry failed: {e}")
+        return {
+            "success": False,
+            "error": f"Simple prompt retry exception: {str(e)}",
+            "report_markdown": ""
+        }
+
+
+def _prepare_simple_content_summary(
+    organized_claims: Dict[str, List[Claim]],
+    citation_map: Dict[str, int]
+) -> str:
+    """Prepare a simplified content summary for retry attempts."""
+    content_parts = []
+
+    for category, claims in organized_claims.items():
+        if not claims:
+            continue
+            
+        # Limit to top claims to avoid overwhelming the prompt
+        top_claims = claims[:5] if len(claims) > 5 else claims
+        
+        for claim in top_claims:
+            # Find citation numbers for this claim
+            citation_numbers = []
+            for url in claim["source_urls"]:
+                if url in citation_map:
+                    citation_numbers.append(str(citation_map[url]))
+            
+            citation_str = f"[{', '.join(citation_numbers)}]" if citation_numbers else ""
+            content_parts.append(f"- {claim['text']} {citation_str}")
+
+    return "\n".join(content_parts)
 
 
 def _organize_claims_for_writing(claims: List[Claim]) -> Dict[str, List[Claim]]:
