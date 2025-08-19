@@ -24,12 +24,20 @@ Guidelines:
 3. Vary search operators and synonyms
 4. Focus on finding authoritative, credible sources
 5. Avoid duplicate or overly similar queries
+6. For each query, specify the most appropriate source type hint:
+   - "academic": For scholarly research, papers, educational content
+   - "news": For current events, recent developments, breaking news
+   - "government": For official data, regulations, policy information
+   - "general": For broad overviews, general information, multiple perspectives
 
 YOU MUST respond with ONLY a valid JSON object in this exact format:
 {
   "sub_questions": ["question1", "question2", ...],
-  "queries": ["query1", "query2", ...]
+  "queries": ["query1", "query2", ...],
+  "source_type_hints": ["academic", "news", "government", "general", ...]
 }
+
+The source_type_hints array must have the same length as the queries array, with each hint corresponding to the query at the same index.
 
 DO NOT include any text before or after the JSON. ONLY return the JSON object."""
 
@@ -44,14 +52,22 @@ Guidelines:
 5. Focus on filling gaps rather than duplicating existing coverage
 6. Consider different angles, timeframes, or expert perspectives not yet covered
 7. Prioritize queries most likely to find authoritative, missing information
+8. For each new query, specify the most appropriate source type hint:
+   - "academic": For scholarly research, papers, educational content
+   - "news": For current events, recent developments, breaking news
+   - "government": For official data, regulations, policy information
+   - "general": For broad overviews, general information, multiple perspectives
 
 YOU MUST respond with ONLY a valid JSON object in this exact format:
 {
   "gaps_identified": ["gap1", "gap2", ...],
   "new_sub_questions": ["question1", "question2", ...],
   "new_queries": ["query1", "query2", ...],
+  "new_source_type_hints": ["academic", "news", "government", "general", ...],
   "refinement_rationale": "Brief explanation of why these additions are needed"
 }
+
+The new_source_type_hints array must have the same length as the new_queries array.
 
 DO NOT include any text before or after the JSON. ONLY return the JSON object."""
 
@@ -144,16 +160,23 @@ async def plan(
                 
                 sub_questions = planning_result.get("sub_questions", [])
                 queries = planning_result.get("queries", [])
+                source_type_hints = planning_result.get("source_type_hints", [])
                 
             except (json.JSONDecodeError, ValueError) as e:
                 logger.error(f"Failed to parse planning response: {e}")
                 logger.error(f"Raw content: {content[:500]}...")
                 # Fallback to simple queries
                 sub_questions, queries = _generate_fallback_plan(topic, constraints)
+                source_type_hints = _generate_fallback_source_hints(queries)
             
             # Validate and clean results
             sub_questions = [q.strip() for q in sub_questions if q.strip()]
             queries = [q.strip() for q in queries if q.strip()]
+            
+            # Ensure source_type_hints matches queries length
+            if len(source_type_hints) != len(queries):
+                logger.warning(f"Source type hints length ({len(source_type_hints)}) doesn't match queries length ({len(queries)})")
+                source_type_hints = _generate_fallback_source_hints(queries)
             
             # Apply domain filters to queries
             if constraints.get("include_domains") or constraints.get("exclude_domains"):
@@ -162,12 +185,28 @@ async def plan(
             # Ensure minimum requirements
             if len(queries) < 3:
                 fallback_sub, fallback_queries = _generate_fallback_plan(topic, constraints)
+                fallback_hints = _generate_fallback_source_hints(fallback_queries)
                 sub_questions.extend(fallback_sub)
                 queries.extend(fallback_queries)
+                source_type_hints.extend(fallback_hints)
             
-            # Deduplicate
+            # Deduplicate while preserving source_type_hints alignment
+            unique_queries = []
+            unique_hints = []
+            seen_queries = set()
+            
+            for i, query in enumerate(queries):
+                if query not in seen_queries:
+                    unique_queries.append(query)
+                    if i < len(source_type_hints):
+                        unique_hints.append(source_type_hints[i])
+                    else:
+                        unique_hints.append("general")  # Default fallback
+                    seen_queries.add(query)
+            
             sub_questions = list(dict.fromkeys(sub_questions))[:5]
-            queries = list(dict.fromkeys(queries))[:8]
+            queries = unique_queries[:8]
+            source_type_hints = unique_hints[:8]
             
             logger.info(
                 f"Planning completed: {len(sub_questions)} sub-questions, {len(queries)} queries",
@@ -192,6 +231,7 @@ async def plan(
                 "success": True,
                 "sub_questions": sub_questions,
                 "queries": queries,
+                "source_type_hints": source_type_hints,
                 "metadata": {
                     "topic": topic,
                     "planning_method": "llm_structured"
@@ -204,12 +244,14 @@ async def plan(
             # Fallback planning
             try:
                 sub_questions, queries = _generate_fallback_plan(topic, constraints)
+                source_type_hints = _generate_fallback_source_hints(queries)
                 logger.info("Using fallback planning")
                 
                 return {
                     "success": True,
                     "sub_questions": sub_questions,
                     "queries": queries,
+                    "source_type_hints": source_type_hints,
                     "metadata": {
                         "topic": topic,
                         "planning_method": "fallback",
@@ -577,3 +619,23 @@ def _apply_domain_filters_to_queries(queries: List[str], constraints: Constraint
         filtered_queries.append(query)
     
     return filtered_queries
+
+
+def _generate_fallback_source_hints(queries: List[str]) -> List[str]:
+    """Generate fallback source type hints for queries when LLM parsing fails."""
+    hints = []
+    
+    for query in queries:
+        query_lower = query.lower()
+        
+        # Simple heuristics to determine source type
+        if any(keyword in query_lower for keyword in ["site:edu", "research", "study", "analysis", "technical", "academic"]):
+            hints.append("academic")
+        elif any(keyword in query_lower for keyword in ["site:gov", "government", "policy", "regulation", "official"]):
+            hints.append("government")
+        elif any(keyword in query_lower for keyword in ["news", "recent", "latest", "breaking", "2024", "current"]):
+            hints.append("news")
+        else:
+            hints.append("general")
+    
+    return hints

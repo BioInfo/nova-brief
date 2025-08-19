@@ -118,6 +118,19 @@ def render_evidence_map_tab(results):
         if st.session_state.selected_claim:
             # Show selected claim details
             selected_index = st.session_state.selected_claim_index
+            
+            # Bounds check to prevent IndexError
+            if selected_index >= len(claims):
+                # Reset to a valid index if out of bounds
+                selected_index = 0
+                st.session_state.selected_claim_index = 0
+                if claims:
+                    st.session_state.selected_claim = claims[0].get("id")
+                else:
+                    st.session_state.selected_claim = None
+                    st.rerun()
+                    return
+            
             selected_claim = claims[selected_index]
             
             # Claim details card

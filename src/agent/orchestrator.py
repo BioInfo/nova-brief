@@ -6,7 +6,7 @@ from ..storage.models import (
     ResearchState, create_initial_state, create_default_constraints,
     Constraints, SearchResult, Document, Chunk, Claim, Citation, Report
 )
-from . import planner, searcher, reader, analyst, verifier, writer
+from . import planner, searcher, reader, analyst, verifier, writer, critic
 from ..observability.logging import get_logger
 from ..observability.tracing import TimedOperation, emit_event
 
@@ -187,7 +187,7 @@ async def _execute_pipeline_stages(state: ResearchState, progress_callback: Opti
                 state["queries"].extend(follow_up_queries[:3])  # Add top 3 follow-up queries
                 logger.info(f"Added {len(follow_up_queries[:3])} follow-up queries for round {round_num + 1}")
         
-        # Stage 6: Writing (final stage)
+        # Stage 6: Writing (draft stage)
         writing_result = await _execute_writing_stage(state, _notify_progress)
         if not writing_result["success"]:
             return {
@@ -195,9 +195,32 @@ async def _execute_pipeline_stages(state: ResearchState, progress_callback: Opti
                 "error": f"Writing stage failed: {writing_result.get('error')}"
             }
         
+        # Stage 7: Critic Review (Phase 2 requirement)
+        critic_result = await _execute_critic_stage(state, writing_result["report"], _notify_progress)
+        if not critic_result["success"]:
+            # If critic fails, use original report
+            logger.warning(f"Critic stage failed: {critic_result.get('error')}, using original report")
+            return {
+                "success": True,
+                "report": writing_result["report"]
+            }
+        
+        # Stage 8: Writer Revision (final stage)
+        if critic_result.get("needs_revision", False):
+            revision_result = await _execute_writer_revision_stage(
+                state, writing_result["report"], critic_result["feedback"], _notify_progress
+            )
+            if revision_result["success"]:
+                final_report = revision_result["report"]
+            else:
+                logger.warning("Writer revision failed, using original report")
+                final_report = writing_result["report"]
+        else:
+            final_report = writing_result["report"]
+        
         return {
             "success": True,
-            "report": writing_result["report"]
+            "report": final_report
         }
         
     except Exception as e:
@@ -396,7 +419,7 @@ async def _execute_writing_stage(state: ResearchState, notify_progress: Optional
     """Execute writing stage."""
     try:
         state["status"] = "writing"
-        state["progress_percent"] = 0.95  # Stage 1.5: Writing progress
+        state["progress_percent"] = 0.90  # Adjusted for critic stage
         if notify_progress:
             notify_progress()
         emit_event("stage_started", metadata={"stage": "writing", "claims": len(state["claims"])})
@@ -404,13 +427,17 @@ async def _execute_writing_stage(state: ResearchState, notify_progress: Optional
         # Coverage report will be passed from verification stage if needed
         coverage_report = None
         
+        # Get target audience from state if available
+        target_audience = state.get("target_audience", "General")
+        
         result = await writer.write(
             state["claims"],
             state["citations"],
             state["draft_sections"],
             state["topic"],
             state["sub_questions"],
-            coverage_report
+            coverage_report,
+            target_audience
         )
         
         if result["success"]:
@@ -434,6 +461,105 @@ async def _execute_writing_stage(state: ResearchState, notify_progress: Optional
             
     except Exception as e:
         logger.error(f"Writing stage failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+async def _execute_critic_stage(state: ResearchState, draft_report: Dict[str, Any], notify_progress: Optional[Callable] = None) -> Dict[str, Any]:
+    """Execute critic review stage."""
+    try:
+        state["status"] = "reviewing"
+        state["progress_percent"] = 0.96
+        if notify_progress:
+            notify_progress()
+        emit_event("stage_started", metadata={"stage": "critic", "report_words": draft_report.get("word_count", 0)})
+        
+        # Get target audience from state
+        target_audience = state.get("target_audience", "General")
+        
+        result = await critic.critique_report(
+            report_content=draft_report["report_md"],
+            research_topic=state["topic"],
+            target_audience=target_audience,
+            sources_used=draft_report.get("references", []),
+            research_context={
+                "research_mode": state.get("constraints", {}).get("research_mode", "balanced"),
+                "search_queries_count": len(state["queries"]),
+                "sources_analyzed": len(state["documents"]),
+                "claims_verified": len(state["claims"])
+            }
+        )
+        
+        if result["success"]:
+            logger.info(f"Critic review completed: {len(result.get('feedback', {}).get('improvements', []))} improvements suggested")
+            emit_event("stage_completed", metadata={"stage": "critic", "needs_revision": result.get("needs_revision", False)})
+            
+            return result
+        else:
+            return {"success": False, "error": result.get("error")}
+            
+    except Exception as e:
+        logger.error(f"Critic stage failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+async def _execute_writer_revision_stage(
+    state: ResearchState,
+    original_report: Dict[str, Any],
+    critic_feedback: Dict[str, Any],
+    notify_progress: Optional[Callable] = None
+) -> Dict[str, Any]:
+    """Execute writer revision stage based on critic feedback."""
+    try:
+        state["status"] = "revising"
+        state["progress_percent"] = 0.98
+        if notify_progress:
+            notify_progress()
+        emit_event("stage_started", metadata={"stage": "revision", "feedback_items": len(critic_feedback.get("improvements", []))})
+        
+        # Get target audience from state
+        target_audience = state.get("target_audience", "General")
+        
+        # Since writer.revise() doesn't exist, we'll call writer.write() again with revision context
+        # This is a simplified approach - in a full implementation, we'd create a proper revise function
+        logger.info("Creating revised report based on critic feedback")
+        
+        # Create revision prompt for the writer by adding critic feedback to constraints
+        revision_context = f"""
+REVISION INSTRUCTIONS:
+The following improvements were suggested by the critic:
+{_format_critic_feedback_for_revision(critic_feedback)}
+
+Please incorporate these suggestions into an improved version of the report.
+"""
+        
+        # Add revision context to state for the writer
+        enhanced_claims = state["claims"]
+        enhanced_citations = state["citations"]
+        enhanced_sections = state["draft_sections"]
+        
+        result = await writer.write(
+            enhanced_claims,
+            enhanced_citations,
+            enhanced_sections,
+            state["topic"],
+            state["sub_questions"],
+            coverage_report={"revision_context": revision_context},
+            target_audience=target_audience
+        )
+        
+        if result["success"]:
+            # Update final report in state
+            state["final_report"] = result["report"]
+            
+            logger.info(f"Writer revision completed: {result['report']['word_count']} words")
+            emit_event("stage_completed", metadata={"stage": "revision", **result["metadata"]})
+            
+            return result
+        else:
+            return {"success": False, "error": result.get("error")}
+            
+    except Exception as e:
+        logger.error(f"Writer revision stage failed: {e}")
         return {"success": False, "error": str(e)}
 
 
@@ -479,3 +605,97 @@ def validate_pipeline_inputs(topic: str, constraints: Optional[Constraints] = No
         "valid": len(issues) == 0,
         "issues": issues
     }
+
+
+def _format_critic_feedback_for_revision(critic_feedback: Dict[str, Any]) -> str:
+    """Format critic feedback for writer revision instructions."""
+    try:
+        if not critic_feedback or not isinstance(critic_feedback, dict):
+            return "General improvements suggested by critic review."
+        
+        # Extract critique data
+        critique = critic_feedback.get("critique", {})
+        if not critique:
+            return "General improvements suggested by critic review."
+        
+        feedback_parts = []
+        
+        # Overall score and recommendations
+        overall_score = critique.get("overall_score", 0)
+        if overall_score:
+            feedback_parts.append(f"Overall quality score: {overall_score}/10")
+        
+        # Priority improvements
+        priority_improvements = critique.get("priority_improvements", [])
+        if priority_improvements:
+            feedback_parts.append("\nPriority Improvements:")
+            for improvement in priority_improvements[:5]:  # Top 5 improvements
+                category = improvement.get("category", "general")
+                description = improvement.get("description", "")
+                priority = improvement.get("priority", "medium")
+                if description:
+                    feedback_parts.append(f"- [{priority.upper()}] {category}: {description}")
+        
+        # Content quality feedback
+        content_quality = critique.get("content_quality", {})
+        if content_quality:
+            issues = content_quality.get("issues", [])
+            suggestions = content_quality.get("suggestions", [])
+            
+            if issues:
+                feedback_parts.append(f"\nContent Issues to Address:")
+                for issue in issues[:3]:  # Top 3 issues
+                    feedback_parts.append(f"- {issue}")
+            
+            if suggestions:
+                feedback_parts.append(f"\nContent Suggestions:")
+                for suggestion in suggestions[:3]:  # Top 3 suggestions
+                    feedback_parts.append(f"- {suggestion}")
+        
+        # Structure and clarity feedback
+        structure_clarity = critique.get("structure_clarity", {})
+        if structure_clarity:
+            improvements = structure_clarity.get("improvements", [])
+            if improvements:
+                feedback_parts.append(f"\nStructural Improvements:")
+                for improvement in improvements[:3]:
+                    feedback_parts.append(f"- {improvement}")
+        
+        # Evidence support feedback
+        evidence_support = critique.get("evidence_support", {})
+        if evidence_support:
+            weak_support = evidence_support.get("weak_support", [])
+            unsupported = evidence_support.get("unsupported", [])
+            
+            if weak_support or unsupported:
+                feedback_parts.append(f"\nEvidence Improvements:")
+                for claim in weak_support[:2]:
+                    feedback_parts.append(f"- Strengthen evidence for: {claim}")
+                for claim in unsupported[:2]:
+                    feedback_parts.append(f"- Add sources for: {claim}")
+        
+        # Bias and completeness feedback
+        bias_objectivity = critique.get("bias_objectivity", {})
+        if bias_objectivity:
+            missing_perspectives = bias_objectivity.get("missing_perspectives", [])
+            if missing_perspectives:
+                feedback_parts.append(f"\nPerspectives to Include:")
+                for perspective in missing_perspectives[:3]:
+                    feedback_parts.append(f"- {perspective}")
+        
+        completeness = critique.get("completeness", {})
+        if completeness:
+            gaps = completeness.get("gaps", [])
+            if gaps:
+                feedback_parts.append(f"\nContent Gaps to Fill:")
+                for gap in gaps[:3]:
+                    feedback_parts.append(f"- {gap}")
+        
+        if feedback_parts:
+            return "\n".join(feedback_parts)
+        else:
+            return "General improvements suggested by critic review."
+    
+    except Exception as e:
+        logger.warning(f"Error formatting critic feedback: {e}")
+        return "General improvements suggested by critic review."
