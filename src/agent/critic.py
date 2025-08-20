@@ -13,7 +13,7 @@ from typing import Dict, Any, List, Optional
 from src.observability.logging import get_logger
 from src.observability.tracing import start_span, end_span
 from src.config import Config
-from ..providers.openrouter_client import chat
+from ..providers.openrouter_client import LLMClient
 
 logger = get_logger(__name__)
 
@@ -572,12 +572,16 @@ async def review(
             {"role": "user", "content": user_prompt}
         ]
         
-        # Call LLM for review
-        response = await chat(
+        # Call LLM for review using LLMClient with model_key
+        if model_name:
+            client = LLMClient(model_key=model_name)
+        else:
+            client = LLMClient()  # Use default configuration
+            
+        response = await client.chat(
             messages=messages,
             temperature=0.1,  # Low temperature for consistent evaluation
-            max_tokens=1000,
-            model_key=model_name  # Use configured model
+            max_tokens=1000
         )
         
         if not response["success"]:

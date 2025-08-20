@@ -13,7 +13,7 @@ from typing import Dict, Any, List, Optional
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from src.providers.openrouter_client import chat
+from src.providers.openrouter_client import LLMClient
 from src.observability.logging import get_logger
 from src.config import Config
 
@@ -72,12 +72,16 @@ async def score_report(
             model_preference = research_mode_config.get("model_preference", "balanced") if research_mode_config else "balanced"
             model_key = Config.get_agent_model("critic", model_preference, "General")  # Reuse critic model config
         
-        # Call LLM for evaluation
-        response = await chat(
+        # Call LLM for evaluation using LLMClient with model_key
+        if model_key:
+            client = LLMClient(model_key=model_key)
+        else:
+            client = LLMClient()  # Use default configuration
+            
+        response = await client.chat(
             messages=messages,
             temperature=0.1,  # Low temperature for consistent evaluation
-            max_tokens=800,
-            model_key=model_key
+            max_tokens=800
         )
         
         if not response["success"]:
