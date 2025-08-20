@@ -164,9 +164,9 @@ def _render_running_state():
                     eta_formatted = format_eta(eta_seconds)
                     st.metric("ETA", eta_formatted)
         
-        # Show step indicator
-        step_names = ["Planning", "Searching", "Reading", "Analyzing", "Verifying", "Writing"]
-        current_step = min(int(progress_percent * 6), 5)
+        # Show step indicator (Phase 4: Updated with critic review and revision steps)
+        step_names = ["Planning", "Searching", "Reading", "Analyzing", "Verifying", "Writing", "Review", "Revision"]
+        current_step = min(int(progress_percent * 8), 7)
         
         step_indicators = []
         for i, step in enumerate(step_names):
@@ -231,6 +231,9 @@ def _render_results_state():
         st.metric("Claims", len(state.get('claims', [])))
     with col4:
         st.metric("Word Count", results.get("report", {}).get("word_count", 0))
+    
+    # Phase 4: Quality Metrics Section
+    _render_quality_metrics(results)
     
     # Enhanced results tabs
     tab1, tab2, tab3, tab4 = st.tabs(["📄 Brief", "🗺️ Evidence Map", "🔗 Sources", "📊 Details"])
@@ -432,14 +435,121 @@ def _run_research(topic: str, constraints: Constraints, selected_model: str, tar
 
 async def _run_research_with_monitoring(topic: str, constraints: Constraints, selected_model: str, target_audience: str, callback):
     """Run research pipeline with progress monitoring."""
-    # Pass target_audience as part of constraints for now
-    enhanced_constraints = dict(constraints)
-    enhanced_constraints['_target_audience'] = target_audience
+    # For now, we'll pass the target_audience through session state
+    # In a future update, we can modify the orchestrator to accept target_audience directly
+    st.session_state.target_audience = target_audience
     
     # Now the orchestrator supports callbacks!
     return await run_research_pipeline(
         topic=topic,
-        constraints=enhanced_constraints,
+        constraints=constraints,
         selected_model=selected_model,
         progress_callback=callback.update_progress
     )
+
+
+def _render_quality_metrics(results):
+    """Render Phase 4 quality metrics section."""
+    # Check if we have Phase 4 quality metrics in the results
+    report = results.get("report", {})
+    state = results.get("state", {})
+    
+    # Look for quality scores in various possible locations
+    quality_scores = {}
+    
+    # Check if scores are in the report metadata
+    if isinstance(report, dict):
+        metadata = report.get("metadata", {})
+        if "overall_quality_score" in metadata:
+            quality_scores = {
+                "overall_quality_score": metadata.get("overall_quality_score"),
+                "comprehensiveness_score": metadata.get("comprehensiveness_score"),
+                "synthesis_score": metadata.get("synthesis_score"),
+                "clarity_score": metadata.get("clarity_score"),
+                "justification": metadata.get("justification", "")
+            }
+    
+    # Check if scores are in the state
+    if not quality_scores and "overall_quality_score" in state:
+        quality_scores = {
+            "overall_quality_score": state.get("overall_quality_score"),
+            "comprehensiveness_score": state.get("comprehensiveness_score"),
+            "synthesis_score": state.get("synthesis_score"),
+            "clarity_score": state.get("clarity_score"),
+            "justification": state.get("justification", "")
+        }
+    
+    # Check if scores are at the top level of results
+    if not quality_scores and "overall_quality_score" in results:
+        quality_scores = {
+            "overall_quality_score": results.get("overall_quality_score"),
+            "comprehensiveness_score": results.get("comprehensiveness_score"),
+            "synthesis_score": results.get("synthesis_score"),
+            "clarity_score": results.get("clarity_score"),
+            "justification": results.get("justification", "")
+        }
+    
+    # Display quality metrics if available
+    if quality_scores and quality_scores.get("overall_quality_score") is not None:
+        st.markdown("---")
+        st.markdown("### 🎯 Quality Assessment")
+        st.caption("AI-powered semantic quality evaluation using LLM-as-Judge")
+        
+        # Quality scores in a grid
+        qual_col1, qual_col2, qual_col3, qual_col4 = st.columns(4)
+        
+        with qual_col1:
+            overall_score = quality_scores.get("overall_quality_score", 0)
+            st.metric("Overall Quality", f"{overall_score:.1%}", help="Weighted average of all quality dimensions")
+        
+        with qual_col2:
+            comp_score = quality_scores.get("comprehensiveness_score", 0)
+            st.metric("Comprehensiveness", f"{comp_score:.1%}", help="How well the report addresses research questions")
+        
+        with qual_col3:
+            synth_score = quality_scores.get("synthesis_score", 0)
+            st.metric("Synthesis & Depth", f"{synth_score:.1%}", help="Integration of facts into coherent narrative")
+        
+        with qual_col4:
+            clarity_score = quality_scores.get("clarity_score", 0)
+            st.metric("Clarity & Coherence", f"{clarity_score:.1%}", help="Structure and readability for target audience")
+        
+        # Quality insights
+        justification = quality_scores.get("justification", "")
+        if justification and justification.strip():
+            with st.expander("🔍 Quality Analysis Details", expanded=False):
+                st.markdown("**AI Evaluation Summary:**")
+                st.write(justification)
+        
+        # Quality indicator
+        if overall_score >= 0.8:
+            st.success("🌟 Excellent quality - Report meets high standards")
+        elif overall_score >= 0.7:
+            st.info("✅ Good quality - Report is well-structured and informative")
+        elif overall_score >= 0.6:
+            st.warning("⚠️ Satisfactory quality - Report meets basic standards")
+        else:
+            st.error("❌ Below standards - Report may need significant improvement")
+    
+    # Check for critic review information
+    critic_info = _extract_critic_info(results)
+    if critic_info:
+        st.markdown("---")
+        st.markdown("### 📝 Editorial Review")
+        st.caption("Critic-in-the-loop quality assurance")
+        
+        if critic_info.get("was_revised"):
+            st.success("✅ Report was reviewed and revised for improved quality")
+            revisions_count = critic_info.get("revisions_count", 0)
+            if revisions_count > 0:
+                st.info(f"🔄 {revisions_count} revision(s) applied based on editorial feedback")
+        else:
+            st.info("✅ Report passed editorial review on first draft")
+
+
+def _extract_critic_info(results):
+    """Extract critic review information from results."""
+    # This would need to be populated by the orchestrator
+    # For now, return None as this info isn't currently passed to UI
+    # In a full implementation, the orchestrator would include critic metadata
+    return None

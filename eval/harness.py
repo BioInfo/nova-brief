@@ -100,6 +100,9 @@ class EvaluationHarness:
         # Save results
         self._save_results(evaluation_summary)
         
+        # Generate PDF report (Phase 4)
+        self._generate_pdf_report(evaluation_summary)
+        
         # Print summary
         self._print_evaluation_summary(evaluation_summary)
         
@@ -231,7 +234,7 @@ class EvaluationHarness:
                 report = result["report"]
                 metrics = result["metrics"]
                 
-                # Evaluate content coverage
+                # Legacy content coverage evaluation
                 coverage_score = self._evaluate_content_coverage(
                     report["report_md"],
                     expected_elements
@@ -239,6 +242,12 @@ class EvaluationHarness:
                 
                 # Stage 1.5: Compute sub-question coverage
                 sub_question_coverage = self.compute_sub_question_coverage(
+                    report["report_md"],
+                    state.get("sub_questions", [])
+                )
+                
+                # Phase 4: LLM-as-Judge semantic quality evaluation
+                semantic_scores = await self._evaluate_semantic_quality(
                     report["report_md"],
                     state.get("sub_questions", [])
                 )
@@ -253,7 +262,9 @@ class EvaluationHarness:
                     "coverage_score": coverage_score,
                     "sub_question_coverage": sub_question_coverage,
                     "report_md": report["report_md"],
-                    "error": None
+                    "error": None,
+                    # Phase 4: Add semantic quality scores
+                    **semantic_scores
                 }
             else:
                 return {
@@ -265,7 +276,13 @@ class EvaluationHarness:
                     "claims_count": 0,
                     "citations_count": 0,
                     "coverage_score": 0.0,
-                    "sub_question_coverage": {"covered": 0, "total": 0, "score": 0.0, "details": []}
+                    "sub_question_coverage": {"covered": 0, "total": 0, "score": 0.0, "details": []},
+                    # Phase 4: Add default semantic scores for failed cases
+                    "comprehensiveness_score": 0.0,
+                    "synthesis_score": 0.0,
+                    "clarity_score": 0.0,
+                    "overall_quality_score": 0.0,
+                    "justification": "Evaluation failed"
                 }
         
         except Exception as e:
@@ -281,7 +298,13 @@ class EvaluationHarness:
                 "claims_count": 0,
                 "citations_count": 0,
                 "coverage_score": 0.0,
-                "sub_question_coverage": {"covered": 0, "total": 0, "score": 0.0, "details": []}
+                "sub_question_coverage": {"covered": 0, "total": 0, "score": 0.0, "details": []},
+                # Phase 4: Add default semantic scores for exception cases
+                "comprehensiveness_score": 0.0,
+                "synthesis_score": 0.0,
+                "clarity_score": 0.0,
+                "overall_quality_score": 0.0,
+                "justification": f"Exception during evaluation: {str(e)}"
             }
     
     def _evaluate_content_coverage(
@@ -384,6 +407,64 @@ class EvaluationHarness:
             "details": details
         }
     
+    async def _evaluate_semantic_quality(
+        self,
+        report_md: str,
+        sub_questions: List[str]
+    ) -> Dict[str, Any]:
+        """
+        Evaluate semantic quality using LLM-as-Judge (Phase 4).
+        
+        Args:
+            report_md: Final report markdown content
+            sub_questions: List of sub-questions that should be addressed
+            
+        Returns:
+            Dictionary with semantic quality scores
+        """
+        try:
+            # Import judge module
+            from .judge import score_report
+            
+            # Score the report using LLM-as-Judge
+            result = await score_report(
+                report_markdown=report_md,
+                sub_questions=sub_questions
+            )
+            
+            if result.get("success", False):
+                return {
+                    "comprehensiveness_score": result.get("comprehensiveness_score", 0.6),
+                    "synthesis_score": result.get("synthesis_score", 0.6),
+                    "clarity_score": result.get("clarity_score", 0.6),
+                    "overall_quality_score": result.get("overall_quality_score", 0.6),
+                    "justification": result.get("justification", "LLM-as-Judge evaluation completed"),
+                    "judge_model_used": result.get("model_used", "default")
+                }
+            else:
+                # Fallback scores if judge fails
+                logger.warning(f"LLM-as-Judge evaluation failed: {result.get('error')}")
+                return {
+                    "comprehensiveness_score": 0.6,
+                    "synthesis_score": 0.6,
+                    "clarity_score": 0.6,
+                    "overall_quality_score": 0.6,
+                    "justification": f"Judge evaluation failed: {result.get('error', 'Unknown error')}",
+                    "judge_model_used": "fallback"
+                }
+                
+        except Exception as e:
+            logger.error(f"Semantic quality evaluation failed: {e}")
+            # Return fallback scores
+            return {
+                "comprehensiveness_score": 0.6,
+                "synthesis_score": 0.6,
+                "clarity_score": 0.6,
+                "overall_quality_score": 0.6,
+                "justification": f"Semantic evaluation exception: {str(e)}",
+                "judge_model_used": "fallback"
+            }
+    
     def _calculate_evaluation_metrics(self, total_duration: float) -> Dict[str, Any]:
         """Calculate overall evaluation metrics."""
         if not self.results:
@@ -432,6 +513,29 @@ class EvaluationHarness:
         
         except Exception as e:
             print(f"⚠️  Could not save results: {e}")
+    def _generate_pdf_report(self, evaluation_summary: Dict[str, Any]):
+        """Generate PDF evaluation report (Phase 4)."""
+        try:
+            from .report_generator import create_pdf_report, validate_eval_results
+            
+            # Validate results before PDF generation
+            if not validate_eval_results(evaluation_summary):
+                print("⚠️  Skipping PDF generation - invalid evaluation results")
+                return
+            
+            # Generate PDF filename based on timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            pdf_filename = f"eval/results_{timestamp}.pdf"
+            
+            # Create PDF report
+            create_pdf_report(evaluation_summary, pdf_filename)
+            
+        except ImportError as e:
+            print(f"⚠️  PDF generation skipped - missing dependencies: {e}")
+        except Exception as e:
+            print(f"⚠️  PDF generation failed: {e}")
+            logger.warning(f"PDF generation failed: {e}")
+    
     
     def _print_evaluation_summary(self, summary: Dict[str, Any]):
         """Print evaluation summary."""

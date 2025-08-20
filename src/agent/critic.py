@@ -7,11 +7,13 @@ providing structured feedback for iterative improvements.
 
 import json
 import logging
+import time
 from typing import Dict, Any, List, Optional
 
 from src.observability.logging import get_logger
 from src.observability.tracing import start_span, end_span
 from src.config import Config
+from ..providers.openrouter_client import chat
 
 logger = get_logger(__name__)
 
@@ -505,4 +507,163 @@ async def generate_improvement_suggestions(
             "success": False,
             "error": str(e),
             "error_type": "suggestions_error"
+        }
+
+
+async def review(
+    draft_report: str,
+    state: Dict[str, Any],
+    target_audience: str = "General"
+) -> Dict[str, Any]:
+    """
+    Review a draft report for publication readiness (Phase 4 requirement).
+    
+    This function acts as an editorial gate, determining if a report is ready
+    for publication or needs revisions. Uses the unified quality rubric.
+    
+    Args:
+        draft_report: The draft report markdown content
+        state: Research state containing topic, sub_questions, etc.
+        target_audience: Target audience (Executive/Technical/General)
+    
+    Returns:
+        Dictionary with:
+        - is_publishable: bool
+        - revisions_needed: list[str] (actionable revision instructions)
+        - rubric_notes: optional dict with short notes by criterion
+    """
+    span_id = start_span("critic_review")
+    
+    try:
+        # Import rubric here to avoid circular imports
+        import sys
+        import os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+        from eval.rubric import get_critic_prompts, format_critic_prompt
+        
+        logger.info(f"Starting critic review for target audience: {target_audience}")
+        
+        # Get model configuration for critic agent
+        research_mode_name = Config.SELECTED_RESEARCH_MODE
+        research_mode_config = Config.get_research_mode_config(research_mode_name)
+        model_preference = research_mode_config.get("model_preference", "balanced") if research_mode_config else "balanced"
+        
+        model_name = Config.get_agent_model("critic", model_preference, target_audience)
+        model_params = Config.get_agent_parameters("critic", target_audience)
+        
+        # Extract data from state
+        topic = state.get("topic", "Unknown topic")
+        sub_questions = state.get("sub_questions", [])
+        
+        # Get rubric prompts
+        critic_prompts = get_critic_prompts()
+        
+        # Format the user prompt
+        user_prompt = format_critic_prompt(
+            topic=topic,
+            target_audience=target_audience,
+            sub_questions=sub_questions,
+            draft_report=draft_report
+        )
+        
+        # Prepare messages for LLM
+        messages = [
+            {"role": "system", "content": critic_prompts["system_prompt"]},
+            {"role": "user", "content": user_prompt}
+        ]
+        
+        # Call LLM for review
+        response = await chat(
+            messages=messages,
+            temperature=0.1,  # Low temperature for consistent evaluation
+            max_tokens=1000,
+            model_key=model_name  # Use configured model
+        )
+        
+        if not response["success"]:
+            logger.warning(f"Critic LLM call failed: {response.get('error')}")
+            # Fallback to publishable=True to avoid dead-ends
+            return {
+                "success": True,
+                "is_publishable": True,
+                "revisions_needed": [],
+                "rubric_notes": {"fallback": "LLM call failed, defaulting to publishable"},
+                "model_used": model_name or "fallback"
+            }
+        
+        # Parse JSON response with robust error handling
+        content = response.get("content", "")
+        
+        try:
+            # Try direct JSON parsing first
+            result = json.loads(content)
+        except json.JSONDecodeError:
+            # Fallback: Extract JSON from text using regex
+            import re
+            json_patterns = [
+                r'\{.*\}',  # Basic JSON pattern
+                r'```json\s*(\{.*?\})\s*```',  # JSON in code blocks
+                r'```\s*(\{.*?\})\s*```',  # Generic code blocks
+            ]
+            
+            result = None
+            for pattern in json_patterns:
+                json_match = re.search(pattern, content, re.DOTALL)
+                if json_match:
+                    try:
+                        json_content = json_match.group(1) if len(json_match.groups()) > 0 else json_match.group(0)
+                        result = json.loads(json_content)
+                        break
+                    except json.JSONDecodeError:
+                        continue
+            
+            if not result:
+                logger.warning("Failed to parse critic JSON response, using fallback")
+                return {
+                    "success": True,
+                    "is_publishable": False,
+                    "revisions_needed": ["Please retry formatting - the critic response was malformed"],
+                    "rubric_notes": {"parsing_error": "JSON parsing failed"},
+                    "model_used": model_name or "fallback"
+                }
+        
+        # Extract and validate response fields
+        is_publishable = result.get("is_publishable", False)
+        revisions_needed = result.get("revisions_needed", [])
+        
+        # Ensure revisions_needed is a list
+        if not isinstance(revisions_needed, list):
+            revisions_needed = [str(revisions_needed)] if revisions_needed else []
+        
+        # Ensure is_publishable is boolean
+        if not isinstance(is_publishable, bool):
+            is_publishable = bool(is_publishable)
+        
+        logger.info(f"Critic review completed: publishable={is_publishable}, revisions={len(revisions_needed)}")
+        
+        end_span(span_id, time.time())
+        
+        return {
+            "success": True,
+            "is_publishable": is_publishable,
+            "revisions_needed": revisions_needed,
+            "rubric_notes": {
+                "evaluation_completed": True,
+                "target_audience": target_audience,
+                "sub_questions_count": len(sub_questions)
+            },
+            "model_used": model_name or "default"
+        }
+        
+    except Exception as e:
+        logger.error(f"Critic review failed: {str(e)}")
+        end_span(span_id, time.time())
+        
+        # Fallback to publishable=True to avoid pipeline dead-ends
+        return {
+            "success": True,
+            "is_publishable": True,
+            "revisions_needed": [],
+            "rubric_notes": {"error": f"Review failed: {str(e)}"},
+            "model_used": "fallback"
         }

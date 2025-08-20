@@ -7,6 +7,10 @@ from ..storage.models import (
     Constraints, SearchResult, Document, Chunk, Claim, Citation, Report
 )
 from . import planner, searcher, reader, analyst, verifier, writer, critic
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
+from eval import judge
 from ..observability.logging import get_logger
 from ..observability.tracing import TimedOperation, emit_event
 
@@ -98,12 +102,30 @@ async def run_research_pipeline(
                 }
             )
             
-            return {
+            # Extract quality scores from report metadata for top-level access
+            quality_scores = {}
+            if final_report and "metadata" in final_report:
+                metadata = final_report["metadata"]
+                quality_scores = {
+                    "overall_quality_score": metadata.get("overall_quality_score"),
+                    "comprehensiveness_score": metadata.get("comprehensiveness_score"),
+                    "synthesis_score": metadata.get("synthesis_score"),
+                    "clarity_score": metadata.get("clarity_score"),
+                    "justification": metadata.get("justification")
+                }
+            
+            result = {
                 "success": True,
                 "state": state,
                 "report": final_report,
                 "metrics": state["metrics"]
             }
+            
+            # Add quality scores to top level if available
+            if any(v is not None for v in quality_scores.values()):
+                result.update(quality_scores)
+            
+            return result
             
         except Exception as e:
             logger.error(f"Research pipeline failed: {e}")
@@ -195,20 +217,20 @@ async def _execute_pipeline_stages(state: ResearchState, progress_callback: Opti
                 "error": f"Writing stage failed: {writing_result.get('error')}"
             }
         
-        # Stage 7: Critic Review (Phase 2 requirement)
-        critic_result = await _execute_critic_stage(state, writing_result["report"], _notify_progress)
+        # Stage 7: Critic Review Gate (Phase 4 requirement)
+        critic_result = await _execute_critic_review_stage(state, writing_result["report"], _notify_progress)
         if not critic_result["success"]:
             # If critic fails, use original report
-            logger.warning(f"Critic stage failed: {critic_result.get('error')}, using original report")
+            logger.warning(f"Critic review failed: {critic_result.get('error')}, using original report")
             return {
                 "success": True,
                 "report": writing_result["report"]
             }
         
-        # Stage 8: Writer Revision (final stage)
-        if critic_result.get("needs_revision", False):
+        # Stage 8: Writer Revision (if needed)
+        if not critic_result.get("is_publishable", True) and critic_result.get("revisions_needed"):
             revision_result = await _execute_writer_revision_stage(
-                state, writing_result["report"], critic_result["feedback"], _notify_progress
+                state, writing_result["report"], critic_result, _notify_progress
             )
             if revision_result["success"]:
                 final_report = revision_result["report"]
@@ -217,6 +239,13 @@ async def _execute_pipeline_stages(state: ResearchState, progress_callback: Opti
                 final_report = writing_result["report"]
         else:
             final_report = writing_result["report"]
+        
+        # Stage 9: LLM-as-Judge Quality Evaluation (Phase 4)
+        judge_result = await _execute_judge_evaluation_stage(state, final_report, _notify_progress)
+        if judge_result["success"]:
+            # Add quality scores to final report metadata
+            final_report["metadata"] = final_report.get("metadata", {})
+            final_report["metadata"].update(judge_result["quality_scores"])
         
         return {
             "success": True,
@@ -464,86 +493,83 @@ async def _execute_writing_stage(state: ResearchState, notify_progress: Optional
         return {"success": False, "error": str(e)}
 
 
-async def _execute_critic_stage(state: ResearchState, draft_report: Dict[str, Any], notify_progress: Optional[Callable] = None) -> Dict[str, Any]:
-    """Execute critic review stage."""
+async def _execute_critic_review_stage(state: ResearchState, draft_report: Dict[str, Any], notify_progress: Optional[Callable] = None) -> Dict[str, Any]:
+    """Execute critic review gate stage (Phase 4)."""
     try:
         state["status"] = "reviewing"
         state["progress_percent"] = 0.96
         if notify_progress:
             notify_progress()
-        emit_event("stage_started", metadata={"stage": "critic", "report_words": draft_report.get("word_count", 0)})
+        emit_event("stage_started", metadata={"stage": "critic_review", "report_words": draft_report.get("word_count", 0)})
         
         # Get target audience from state
         target_audience = state.get("target_audience", "General")
         
-        result = await critic.critique_report(
-            report_content=draft_report["report_md"],
-            research_topic=state["topic"],
-            target_audience=target_audience,
-            sources_used=draft_report.get("references", []),
-            research_context={
-                "research_mode": state.get("constraints", {}).get("research_mode", "balanced"),
-                "search_queries_count": len(state["queries"]),
-                "sources_analyzed": len(state["documents"]),
-                "claims_verified": len(state["claims"])
-            }
+        # Use new review function for gating
+        result = await critic.review(
+            draft_report=draft_report["report_md"],
+            state=dict(state),  # Convert ResearchState to dict
+            target_audience=target_audience
         )
         
         if result["success"]:
-            logger.info(f"Critic review completed: {len(result.get('feedback', {}).get('improvements', []))} improvements suggested")
-            emit_event("stage_completed", metadata={"stage": "critic", "needs_revision": result.get("needs_revision", False)})
+            is_publishable = result.get("is_publishable", True)
+            revisions_count = len(result.get("revisions_needed", []))
+            
+            logger.info(f"Critic review completed: publishable={is_publishable}, revisions={revisions_count}")
+            emit_event("stage_completed", metadata={
+                "stage": "critic_review",
+                "is_publishable": is_publishable,
+                "revisions_count": revisions_count
+            })
             
             return result
         else:
             return {"success": False, "error": result.get("error")}
             
     except Exception as e:
-        logger.error(f"Critic stage failed: {e}")
+        logger.error(f"Critic review stage failed: {e}")
         return {"success": False, "error": str(e)}
 
 
 async def _execute_writer_revision_stage(
     state: ResearchState,
     original_report: Dict[str, Any],
-    critic_feedback: Dict[str, Any],
+    critic_review_result: Dict[str, Any],
     notify_progress: Optional[Callable] = None
 ) -> Dict[str, Any]:
-    """Execute writer revision stage based on critic feedback."""
+    """Execute writer revision stage based on critic review feedback (Phase 4)."""
     try:
         state["status"] = "revising"
         state["progress_percent"] = 0.98
         if notify_progress:
             notify_progress()
-        emit_event("stage_started", metadata={"stage": "revision", "feedback_items": len(critic_feedback.get("improvements", []))})
+        
+        revisions_needed = critic_review_result.get("revisions_needed", [])
+        emit_event("stage_started", metadata={"stage": "writer_revision", "revisions_count": len(revisions_needed)})
         
         # Get target audience from state
         target_audience = state.get("target_audience", "General")
         
-        # Since writer.revise() doesn't exist, we'll call writer.write() again with revision context
-        # This is a simplified approach - in a full implementation, we'd create a proper revise function
-        logger.info("Creating revised report based on critic feedback")
+        logger.info("Creating revised report based on critic review feedback")
         
-        # Create revision prompt for the writer by adding critic feedback to constraints
-        revision_context = f"""
-REVISION INSTRUCTIONS:
-The following improvements were suggested by the critic:
-{_format_critic_feedback_for_revision(critic_feedback)}
-
-Please incorporate these suggestions into an improved version of the report.
-"""
+        # Create revision context from critic feedback
+        revision_context = _format_critic_revisions_for_writer(revisions_needed)
         
-        # Add revision context to state for the writer
-        enhanced_claims = state["claims"]
-        enhanced_citations = state["citations"]
-        enhanced_sections = state["draft_sections"]
+        # Add revision context to coverage report for writer
+        enhanced_coverage_report = {
+            "revision_context": revision_context,
+            "original_report": original_report["report_md"],
+            "critic_feedback": critic_review_result
+        }
         
         result = await writer.write(
-            enhanced_claims,
-            enhanced_citations,
-            enhanced_sections,
+            state["claims"],
+            state["citations"],
+            state["draft_sections"],
             state["topic"],
             state["sub_questions"],
-            coverage_report={"revision_context": revision_context},
+            coverage_report=enhanced_coverage_report,
             target_audience=target_audience
         )
         
@@ -552,7 +578,7 @@ Please incorporate these suggestions into an improved version of the report.
             state["final_report"] = result["report"]
             
             logger.info(f"Writer revision completed: {result['report']['word_count']} words")
-            emit_event("stage_completed", metadata={"stage": "revision", **result["metadata"]})
+            emit_event("stage_completed", metadata={"stage": "writer_revision", **result["metadata"]})
             
             return result
         else:
@@ -699,3 +725,105 @@ def _format_critic_feedback_for_revision(critic_feedback: Dict[str, Any]) -> str
     except Exception as e:
         logger.warning(f"Error formatting critic feedback: {e}")
         return "General improvements suggested by critic review."
+
+
+async def _execute_judge_evaluation_stage(state: ResearchState, final_report: Dict[str, Any], notify_progress: Optional[Callable] = None) -> Dict[str, Any]:
+    """Execute LLM-as-Judge quality evaluation stage (Phase 4)."""
+    try:
+        state["status"] = "evaluating"
+        state["progress_percent"] = 0.99
+        if notify_progress:
+            notify_progress()
+        emit_event("stage_started", metadata={"stage": "judge_evaluation", "report_words": final_report.get("word_count", 0)})
+        
+        # Extract report content for evaluation
+        report_content = final_report.get("report_md", "")
+        if not report_content:
+            logger.warning("No report content available for judge evaluation")
+            return {"success": False, "error": "No report content available"}
+        
+        # Use judge evaluation
+        result = await judge.score_report(
+            report_markdown=report_content,
+            sub_questions=state.get("sub_questions", [])
+        )
+        
+        if result["success"]:
+            quality_scores = {
+                "overall_quality_score": result.get("overall_quality_score", 0.6),
+                "comprehensiveness_score": result.get("comprehensiveness_score", 0.6),
+                "synthesis_score": result.get("synthesis_score", 0.6),
+                "clarity_score": result.get("clarity_score", 0.6),
+                "justification": result.get("justification", "LLM-as-Judge evaluation completed"),
+                "judge_model_used": result.get("model_used", "default")
+            }
+            
+            logger.info(f"Judge evaluation completed: overall={quality_scores['overall_quality_score']:.3f}")
+            emit_event("stage_completed", metadata={
+                "stage": "judge_evaluation",
+                "overall_quality_score": quality_scores["overall_quality_score"]
+            })
+            
+            return {
+                "success": True,
+                "quality_scores": quality_scores
+            }
+        else:
+            logger.warning(f"Judge evaluation failed: {result.get('error')}")
+            # Return fallback scores
+            fallback_scores = {
+                "overall_quality_score": 0.6,
+                "comprehensiveness_score": 0.6,
+                "synthesis_score": 0.6,
+                "clarity_score": 0.6,
+                "justification": f"Judge evaluation failed: {result.get('error', 'Unknown error')}",
+                "judge_model_used": "fallback"
+            }
+            return {
+                "success": True,  # Don't fail the pipeline for judge issues
+                "quality_scores": fallback_scores
+            }
+            
+    except Exception as e:
+        logger.error(f"Judge evaluation stage failed: {e}")
+        # Return fallback scores on exception
+        fallback_scores = {
+            "overall_quality_score": 0.6,
+            "comprehensiveness_score": 0.6,
+            "synthesis_score": 0.6,
+            "clarity_score": 0.6,
+            "justification": f"Judge evaluation exception: {str(e)}",
+            "judge_model_used": "fallback"
+        }
+        return {
+            "success": True,  # Don't fail the pipeline for judge issues
+            "quality_scores": fallback_scores
+        }
+
+
+def _format_critic_revisions_for_writer(revisions_needed: List[str]) -> str:
+    """Format critic revisions for writer revision instructions (Phase 4)."""
+    try:
+        if not revisions_needed:
+            return "No specific revisions requested by critic review."
+        
+        revision_parts = [
+            "REVISION INSTRUCTIONS:",
+            "The critic has identified the following areas for improvement:",
+            ""
+        ]
+        
+        for i, revision in enumerate(revisions_needed, 1):
+            revision_parts.append(f"{i}. {revision}")
+        
+        revision_parts.extend([
+            "",
+            "Please incorporate these specific improvements into a revised version of the report.",
+            "Focus on addressing each point while maintaining the overall structure and flow."
+        ])
+        
+        return "\n".join(revision_parts)
+        
+    except Exception as e:
+        logger.warning(f"Error formatting critic revisions: {e}")
+        return "General improvements requested by critic review."

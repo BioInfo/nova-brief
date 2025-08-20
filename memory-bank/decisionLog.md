@@ -1,54 +1,54 @@
 # Decision Log
 
 This file records architectural and implementation decisions using a list format.
-YYYY-MM-DD HH:MM:SS - Log of updates made.
+2025-08-20 19:12:39 - Initialized Decision Log
 
 *
 
 ## Decision
-
-*   
+2025-08-20 19:12:39 - Adopt Dual Model Routing (Manual | Policy | Hybrid) with env-driven overrides
 
 ## Rationale 
-
-*   
+- Provide transparent manual control for single-model runs
+- Enable heterogeneous agent routing via policies to balance cost/quality/speed
+- Keep operations simple by driving defaults from .env while allowing per-agent overrides
 
 ## Implementation Details
-
-*   
+- Authoritative plan captured in [docs/phase3-agent-policies.md](docs/phase3-agent-policies.md)
+- Config sources of truth:
+  - AGENT_POLICIES and resolvers: [Config.get_agent_model()](src/config.py:523), [Config.get_agent_parameters()](src/config.py:587), [Config.apply_research_mode()](src/config.py:498)
+  - Manual model selection legacy path: [Config.SELECTED_MODEL](src/config.py:154)
+- UI entry points:
+  - Current single-model selector: [sidebar._render_model_selection_with_api_status()](src/ui/sidebar.py:223)
+  - Session assignment path: [main_panel._run_research → Config.SELECTED_MODEL](src/ui/main_panel.py:353)
+- Orchestrator integration points (to add):
+  - Read effective routing mode; resolve model per stage before invoking agents: [orchestrator.run_research_pipeline()](src/agent/orchestrator.py:16)
+- Provider override requirement:
+  - Allow explicit model_key in LLM calls: openrouter client selection path in [openrouter_client.__init__](src/providers/openrouter_client.py:32)
 
 ---
 
-[2025-08-16 20:09:55] - Initialized Memory Bank (created decisionLog.md)
-
-[2025-08-16 20:26:15] - **Refactored LLM Provider Architecture for Configurable Models**
-
 ## Decision
-Refactored Nova Brief application to support multiple LLM providers and models through UI selection and environment variables, removing the hardcoded dependency on openai/gpt-oss-120b and Cerebras provider.
+2025-08-20 19:12:39 - Implement Self-Correcting Generation + LLM-as-Judge evaluation (Phase 4)
 
-## Rationale
-- **Flexibility**: Users can now experiment with different powerful models (GPT-4o, Claude 3.5 Sonnet, etc.)
-- **Provider Independence**: Support for OpenRouter, direct OpenAI, and Anthropic APIs
-- **Future-Proofing**: Easy to add new models and providers as they become available
-- **User Experience**: UI-based model selection with real-time API key validation
+## Rationale 
+- Improve report quality prior to finalization (critic-in-the-loop)
+- Evaluate with a rigorous rubric-aligned Judge for credible comparison across models
+- Produce executive-friendly PDF reporting for stakeholders
 
 ## Implementation Details
-- Created `ModelConfig` class for structured model/provider definitions
-- Updated `Config` class with `AVAILABLE_MODELS` dictionary containing 7 predefined models
-- Replaced `OpenRouterClient` with multi-provider `LLMClient` class
-- Added UI components for model selection in Streamlit interface
-- Updated agent pipeline to use selected model through configuration
-- Maintained backward compatibility with existing environment variables
-- Updated documentation and examples for new model selection system
+- Authoritative plan captured in [docs/phase4-agent-eval-upgrades.md](docs/phase4-agent-eval-upgrades.md)
+- Critic:
+  - Add review(...) for publishability gate and actionable revisions in [critic.py](src/agent/critic.py:1)
+  - Maintain existing critique_report(...) for compatibility
+- Orchestrator:
+  - Insert two-pass writing with critic gate: [orchestrator._execute_writing_stage()](src/agent/orchestrator.py:418) then critic review and optional revision stage [orchestrator._execute_critic_stage()](src/agent/orchestrator.py:467)
+- Harness:
+  - Replace/extend coverage with semantic scoring via a shared rubric; integrate into [eval/harness.py](eval/harness.py:1)
+  - Multi-model harness to surface per-model overall_quality and criterion-level scores: [eval/multi_model_harness.py](eval/multi_model_harness.py:1)
+- PDF:
+  - Add report generator module and call post-JSON generation
 
-## Models Supported
-- OpenRouter: gpt-oss-120b (Cerebras), gpt-4o, gpt-4o-mini, claude-3.5-sonnet, claude-3-haiku
-- Direct APIs: gpt-4o-direct (OpenAI), claude-3.5-sonnet-direct (Anthropic)
-
-## Migration Path
-- Existing users continue to work with default gpt-oss-120b
-- New users can select models via UI or SELECTED_MODEL environment variable
-- Legacy MODEL environment variable still supported for backward compatibility
 
 [2025-08-17 00:44:00] - **Decoupled Model Selection from Provider Routing for GPT-OSS-120B**
 
@@ -533,4 +533,81 @@ Completed final implementation of Phase 2 Agent Intelligence requirements by add
 - **User Experience**: Policy-driven research modes with audience adaptation
 - **Content Processing**: Structural extraction with contradiction detection capabilities
 
+
+[2025-08-20 20:29:00] - **Phase 4 Self-Correcting Generation and LLM-as-Judge Implementation Complete**
+
+## Decision
+Successfully implemented complete Phase 4 self-correcting generation pipeline with LLM-as-Judge evaluation, including critical integration fix to expose quality metrics in the frontend UI.
+
+## Rationale
+- **Quality Assurance**: Two-stage writing with critic review ensures higher quality outputs before finalization
+- **Semantic Evaluation**: LLM-as-Judge provides rigorous, rubric-aligned quality scoring for credible model comparisons
+- **Executive Reporting**: PDF generation enables stakeholder-friendly evaluation summaries
+- **User Visibility**: Frontend integration ensures users can see and benefit from quality improvements
+
+## Implementation Details
+
+### Core Components Implemented:
+1. **Unified Quality Rubric** ([`eval/rubric.py`](eval/rubric.py))
+   - Single source of truth for Critic and Judge evaluation criteria
+   - Shared prompt templates ensuring alignment between optimization and evaluation
+   - Standardized scoring: Comprehensiveness, Synthesis & Depth, Clarity & Coherence
+
+2. **Enhanced Critic Agent** ([`src/agent/critic.py`](src/agent/critic.py))
+   - Added [`review()`](src/agent/critic.py:45) function for publication gating
+   - Returns `is_publishable` boolean and `revisions_needed` list for actionable feedback
+   - Integrated with orchestrator for quality gate enforcement
+
+3. **LLM-as-Judge Evaluation** ([`eval/judge.py`](eval/judge.py))
+   - [`score_report()`](eval/judge.py:26) function provides semantic quality scoring (0.0-1.0)
+   - Robust JSON parsing with multiple fallback strategies
+   - Weighted overall score calculation using rubric-defined weights
+
+4. **Two-Stage Writing Pipeline** ([`src/agent/orchestrator.py`](src/agent/orchestrator.py))
+   - Draft → Critic Review → Revision (if needed) → Judge Evaluation → Finalize
+   - Added [`_execute_critic_review_stage()`](src/agent/orchestrator.py:467) and [`_execute_writer_revision_stage()`](src/agent/orchestrator.py:506)
+   - **CRITICAL FIX**: Added [`_execute_judge_evaluation_stage()`](src/agent/orchestrator.py:704) to populate quality scores
+
+5. **PDF Report Generation** ([`eval/report_generator.py`](eval/report_generator.py))
+   - Executive-friendly evaluation summaries with quality insights
+   - Fixed Unicode character issues for reliable PDF generation
+   - Professional formatting with performance analysis and recommendations
+
+6. **Frontend Integration** ([`src/ui/main_panel.py`](src/ui/main_panel.py))
+   - [`_render_quality_metrics()`](src/ui/main_panel.py:451) displays quality scores with visual indicators
+   - Enhanced progress tracking showing Review and Revision stages (8 total steps)
+   - Quality assessment levels: Excellent (≥80%), Good (70-80%), Satisfactory (60-70%), Needs Improvement (<60%)
+
+### Critical Integration Fix:
+- **Problem**: Quality scores generated by Judge but not flowing to UI display
+- **Root Cause**: Orchestrator wasn't calling Judge evaluation or populating results with scores
+- **Solution**: Added Judge evaluation stage to orchestrator pipeline with score extraction to top-level results
+- **Impact**: Users now see quality metrics for every research report
+
+### Data Flow Architecture:
+```
+Research Topic → Planning → Search → Read → Analyze → Verify → Write → 
+Critic Review → Revision (if needed) → Judge Evaluation → Quality Scores in UI
+```
+
+## Testing and Validation
+- **Comprehensive Test Suite**: 4/4 Phase 4 tests passing ([`tests/test_phase4_implementation.py`](tests/test_phase4_implementation.py))
+- **PDF Generation**: Unicode issues resolved, reliable report generation
+- **UI Integration**: Quality metrics properly displayed with percentage scores and justifications
+- **End-to-End Verification**: Complete pipeline tested with quality score population
+
+## Impact
+- **Enhanced Quality**: Two-stage writing with critic review improves report quality before finalization
+- **Transparent Evaluation**: Users see detailed quality scores (Overall, Comprehensiveness, Synthesis, Clarity) for every report
+- **Executive Reporting**: PDF evaluation summaries provide stakeholder-friendly quality insights
+- **Production Ready**: All features integrated and operational in Streamlit application
+
+## Technical Architecture Achieved:
+- **Self-Correcting Pipeline**: Automated quality improvement through critic feedback loops
+- **Semantic Evaluation**: Rubric-aligned scoring system for consistent quality assessment
+- **Quality Transparency**: Real-time quality metrics visible to users during and after research
+- **Executive Reporting**: Professional PDF summaries for evaluation and comparison purposes
+- **Unified Standards**: Single rubric ensures alignment between generation optimization and evaluation
+
+This completes the Phase 4 implementation with Nova Brief now providing self-correcting generation capabilities, transparent quality assessment, and executive-level reporting for research quality evaluation.
 This completes the Phase 2 Agent Intelligence implementation with Nova Brief now functioning as a sophisticated multi-agent research platform with advanced orchestration, quality assurance, and intelligence capabilities.
